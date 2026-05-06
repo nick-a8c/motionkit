@@ -7,9 +7,7 @@ A small browser-based exploration tool for motion graphics. Built as a single HT
 
 ## Live demo
 
-👉 **[Try it in your browser](https://YOUR-USERNAME.github.io/webgl-motion-studies/)**
-
-> Replace `YOUR-USERNAME` above with your GitHub username after you enable GitHub Pages (see [Hosting](#hosting) below).
+👉 **[Try it in your browser](https://nick-a8c.github.io/webgl-motion-studies/)**
 
 ## Preview
 
