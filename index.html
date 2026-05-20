@@ -11527,7 +11527,13 @@ function renderHalftone(data){
       // 1× = baseline 2048; 2× = 4096; 3× = 6144. The button's data-scale
       // attribute selects the multiplier; missing or invalid → 1×.
       const scale = Math.max(1, Math.min(3, parseInt(btn.dataset.scale || '1', 10) || 1));
-      const HIGH = 2048 * scale;
+      // Honor the live canvas aspect — without this, 16:9 scenes would be
+      // squashed into a square PNG. The longer axis gets the 2048/4096/6144
+      // baseline; the shorter axis is scaled proportionally.
+      const view = window.MotionPlaygroundView || { aspect: 1 };
+      const baseHigh = 2048 * scale;
+      const HIGH_W = view.aspect >= 1 ? baseHigh : Math.round(baseHigh * view.aspect);
+      const HIGH_H = view.aspect >= 1 ? Math.round(baseHigh / view.aspect) : baseHigh;
 
       const prevSize = new THREE.Vector2();
       renderer.getSize(prevSize);
@@ -11536,7 +11542,7 @@ function renderHalftone(data){
       // Boost drawing-buffer resolution. setSize(w, h, false) keeps the CSS
       // size untouched; only canvas.width/height change.
       renderer.setPixelRatio(1);
-      renderer.setSize(HIGH, HIGH, false);
+      renderer.setSize(HIGH_W, HIGH_H, false);
 
       // Push Line2 material resolutions to the high res so pixel-thickness
       // stays correct. Stash originals to restore.
@@ -11544,7 +11550,7 @@ function renderHalftone(data){
       function bump(mat){
         if (mat && mat.resolution && typeof mat.resolution.x === 'number'){
           stash.push({ mat, x: mat.resolution.x, y: mat.resolution.y });
-          mat.resolution.set(HIGH, HIGH);
+          mat.resolution.set(HIGH_W, HIGH_H);
         }
       }
       if (currentState){
@@ -12151,13 +12157,117 @@ ${effectCalls}
     scrubActive = false;
   });
 
+  // ---- Inlined overlay post-process (gradient / pixelate / halftone) ----
+  // Mirrors the studio's Section-4 OVERLAY_SHADERS + renderWithOverlays so
+  // exports honour every overlay the live canvas applies. Fragment-shader
+  // sources come in via JSON.stringify so we don't fight nested backticks.
+  var POST_VERT_SRC = ${JSON.stringify(POST_VERT)};
+  var GRAD_FRAG = ${JSON.stringify(OVERLAY_SHADERS.gradient.fragment)};
+  var PIX_FRAG  = ${JSON.stringify(OVERLAY_SHADERS.pixelate.fragment)};
+  var HT_FRAG   = ${JSON.stringify(OVERLAY_SHADERS.halftone.fragment)};
+  var frontRT = null, backRT = null, postScene = null, postCamera = null, postQuad = null;
+  var overlayMats = {};
+  function getOverlayMat(id){
+    if (overlayMats[id]) return overlayMats[id];
+    var u, frag;
+    if (id === 'gradient'){
+      u = { tDiffuse:{value:null}, colorA:{value:new THREE.Color('#ff5c5c')},
+            colorB:{value:new THREE.Color('#ffe066')}, angle:{value:45},
+            position:{value:0}, scale:{value:1}, softness:{value:0.5}, amount:{value:0.7},
+            bgColor:{value:new THREE.Color('#dedede')}, edgeSoftness:{value:0.05} };
+      frag = GRAD_FRAG;
+    } else if (id === 'pixelate'){
+      u = { tDiffuse:{value:null}, cells:{value:80} };
+      frag = PIX_FRAG;
+    } else if (id === 'halftone'){
+      u = { tDiffuse:{value:null}, cells:{value:80},
+            inkColor:{value:new THREE.Color('#000000')},
+            paperColor:{value:new THREE.Color('#ffffff')}, threshold:{value:0} };
+      frag = HT_FRAG;
+    } else return null;
+    overlayMats[id] = new THREE.ShaderMaterial({ uniforms: u, vertexShader: POST_VERT_SRC, fragmentShader: frag });
+    return overlayMats[id];
+  }
+  function activeOverlayPasses(p){
+    var list = [];
+    if (p.overlayGradient){
+      var m = getOverlayMat('gradient');
+      m.uniforms.colorA.value.set(p.overlayGradientColorA || '#ff5c5c');
+      m.uniforms.colorB.value.set(p.overlayGradientColorB || '#ffe066');
+      m.uniforms.angle.value    = +p.overlayGradientAngle    || 0;
+      m.uniforms.position.value = +p.overlayGradientPosition || 0;
+      m.uniforms.scale.value    = +p.overlayGradientScale    || 1;
+      m.uniforms.softness.value = +p.overlayGradientSoftness || 0;
+      m.uniforms.amount.value   = +p.overlayGradientAmount   || 0;
+      var bgHex = (typeof p.bgColor === 'string') ? p.bgColor : '#dedede';
+      m.uniforms.bgColor.value.set(bgHex);
+      m.uniforms.edgeSoftness.value = 0.06;
+      list.push(m);
+    }
+    if (p.overlayPixelate){
+      var mp = getOverlayMat('pixelate');
+      mp.uniforms.cells.value = Math.max(2, +p.overlayPixelateCells || 80);
+      list.push(mp);
+    }
+    if (p.overlayHalftone){
+      var mh = getOverlayMat('halftone');
+      mh.uniforms.cells.value = Math.max(4, +p.overlayHalftoneCells || 80);
+      mh.uniforms.inkColor.value.set(p.overlayHalftoneInk || '#000000');
+      mh.uniforms.paperColor.value.set(p.overlayHalftonePaper || '#ffffff');
+      mh.uniforms.threshold.value = +p.overlayHalftoneThreshold || 0;
+      list.push(mh);
+    }
+    return list;
+  }
+  function ensurePostScene(){
+    if (postScene) return;
+    postScene  = new THREE.Scene();
+    postCamera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
+    postQuad   = new THREE.Mesh(new THREE.PlaneGeometry(2, 2), null);
+    postScene.add(postQuad);
+  }
+  function ensurePostRT(w, h){
+    if (!frontRT){
+      frontRT = new THREE.WebGLRenderTarget(w, h, { depthBuffer: false, stencilBuffer: false });
+      backRT  = new THREE.WebGLRenderTarget(w, h, { depthBuffer: false, stencilBuffer: false });
+    } else if (frontRT.width !== w || frontRT.height !== h){
+      frontRT.setSize(w, h); backRT.setSize(w, h);
+    }
+  }
+  function renderWithOverlays(p){
+    var passes = activeOverlayPasses(p);
+    if (passes.length === 0){
+      renderer.setRenderTarget(null);
+      renderer.render(scene, camera);
+      return;
+    }
+    ensurePostScene();
+    var sz = renderer.getSize(new THREE.Vector2());
+    var dpr = renderer.getPixelRatio();
+    var w = Math.max(1, Math.floor(sz.x * dpr));
+    var h = Math.max(1, Math.floor(sz.y * dpr));
+    ensurePostRT(w, h);
+    renderer.setRenderTarget(frontRT);
+    renderer.render(scene, camera);
+    var f = frontRT, b = backRT;
+    for (var i = 0; i < passes.length; i++){
+      var mat = passes[i];
+      mat.uniforms.tDiffuse.value = f.texture;
+      postQuad.material = mat;
+      var isLast = i === passes.length - 1;
+      renderer.setRenderTarget(isLast ? null : b);
+      renderer.render(postScene, postCamera);
+      if (!isLast){ var tmp = f; f = b; b = tmp; }
+    }
+  }
+
   function loop(now){
     requestAnimationFrame(loop);
     const t = scrubActive ? scrubT : (now - startT - pausedAccum) / 1000;
     // bg color: if params has bgColor, honor it; else animation's static bg.
     if (typeof params.bgColor === 'string') renderer.setClearColor(params.bgColor, 1);
     try { anim.update(t, params, state); } catch(e){ console.error(e); }
-    renderer.render(scene, camera);
+    renderWithOverlays(params);
   }
   requestAnimationFrame(loop);
 })();
