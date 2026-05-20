@@ -11545,12 +11545,16 @@ function renderHalftone(data){
       renderer.setSize(HIGH_W, HIGH_H, false);
 
       // Push Line2 material resolutions to the high res so pixel-thickness
-      // stays correct. Stash originals to restore.
+      // stays correct, AND scale linewidth by the export multiplier — without
+      // the linewidth bump, a 2× or 3× PNG renders the same N pixels of
+      // thickness over more total pixels, so the lines look thin when the
+      // PNG is viewed at its larger native size.
       const stash = [];
       function bump(mat){
         if (mat && mat.resolution && typeof mat.resolution.x === 'number'){
-          stash.push({ mat, x: mat.resolution.x, y: mat.resolution.y });
+          stash.push({ mat, x: mat.resolution.x, y: mat.resolution.y, lw: mat.linewidth });
           mat.resolution.set(HIGH_W, HIGH_H);
+          if (typeof mat.linewidth === 'number') mat.linewidth = mat.linewidth * scale;
         }
       }
       if (currentState){
@@ -11582,7 +11586,10 @@ function renderHalftone(data){
       // Restore.
       renderer.setPixelRatio(prevDPR);
       renderer.setSize(prevSize.x, prevSize.y, false);
-      stash.forEach(s => s.mat.resolution.set(s.x, s.y));
+      stash.forEach(s => {
+        s.mat.resolution.set(s.x, s.y);
+        if (typeof s.lw === 'number') s.mat.linewidth = s.lw;
+      });
     });
   });
 
