@@ -62,6 +62,27 @@ Three small but user-visible fixes:
     shrink at draw time. Each tool's mask cache key now includes
     `modelScale` so the rasteriser invalidates correctly.
   Both sliders 0.1×–2×, default 1.
+- **Per-Lab-layer transparent background.** Each shape layer's Background
+  row in the Subject panel now has a "Transparent" checkbox alongside the
+  color picker. When checked, that layer is excluded when `rerender()` picks
+  the first non-effects layer to drive the canvas clear color; if every
+  shape layer is transparent the canvas clears with alpha 0. The HTML
+  export runtime + the export's CSS `background:` declaration mirror the
+  same rule. Persists in v2 snapshots via the existing `Object.assign`
+  spread on subjects.
+- **Playground live aspect ratio.** The 1:1 / 16:9 dropdown now resizes the
+  live canvas (not just the HTML export). `.stage-wrap`'s `aspect-ratio`
+  reads from a `--stage-aspect` CSS variable; the dropdown's `change`
+  handler writes it and calls `resize()` synchronously. The shared
+  Playground `resize()` was rewritten to honor real width × height,
+  recompute the orthographic camera's frustum (holds `VIEW` as the short
+  axis so the long axis grows with aspect), and updates `perspCam.aspect`.
+  A new `window.MotionPlaygroundView = { w, h, halfW, halfH, aspect }` is
+  refreshed every resize so tools that need the live frustum (Dots,
+  Halftone) can read it. Dots and Halftone widen their grid into the
+  extra canvas area; the other five tools stay centered with empty
+  flanks (intentional). `eventToWorld()` also reads the live frustum so
+  mouse input maps correctly on non-square ratios.
 - **Playground SVG export.** New "SVG" toolbar button. Each animation
   declares a `toSvg(state, params)` method that returns an array of SVG
   element strings already mapped into a `0 0 1024 1024` viewBox. The
@@ -444,6 +465,17 @@ updates.
 
 ## Open / paused threads
 
+- **Pixel effects on an EFFECTS layer affect the whole canvas, not just
+  layers below.** Motion effects cascade per stack-position (correct), but
+  pixel effects are aggregated into a single screen-space post-process
+  chain that runs over the entire rendered frame regardless of which
+  EFFECTS layer they live on. User has been told about this and explicitly
+  parked it — they want the per-position rule eventually. Doing it
+  properly requires segmenting the render pipeline: walk the layer stack,
+  render each run between EFFECTS layers into its own off-screen target,
+  apply that EFFECTS layer's pixel chain to the accumulated buffer, then
+  composite the next run on top. Studio + HTML export runtime both need
+  the refactor to stay in sync. ~couple hundred LoC.
 - **HTML export for Lab — still active-layer only.** Multi-layer composition,
   global motion, and pixel post-process in the exported runtime is the
   largest remaining lift (~300–500 LoC). The studio-side rendering already

@@ -291,12 +291,16 @@
      how the window is stretched. */
   .stage-wrap { position: relative; background: #ffffff;
     border-radius: 8px; overflow: hidden;
-    aspect-ratio: 1 / 1;
+    aspect-ratio: var(--stage-aspect, 1 / 1);
     /* Grid cells default to align-items: stretch, which would deform our
-       1:1 box vertically. Top-align (so the canvas tracks the top of the
-       right-side panels) but horizontally center within the cell. Width is
-       bounded so the stage can't exceed the viewport height minus chrome. */
+       aspect-ratio box vertically. Top-align (so the canvas tracks the top
+       of the right-side panels) but horizontally center within the cell.
+       max-height keeps the stage from exceeding the viewport height; width
+       is bounded so a square aspect can't exceed that height either. On
+       wider aspect ratios (16:9) the height clamp lets the width grow
+       proportionally while staying within the column. */
     width: min(100%, calc(100vh - 200px));
+    max-height: calc(100vh - 200px);
     align-self: start;
     justify-self: center; }
   .stage { width: 100%; height: 100%; display: block; }
@@ -2754,15 +2758,16 @@
     },
 
     attractor(state, mx, my){
-      // Convert world coords (VIEW = 1100 centered) into [0..1] uv.
+      // Convert world coords into [0..1] uv over the (live, possibly
+      // non-square) plane.
       if (mx == null) {
         state.material.uniforms.cursorUv.value.set(2, 2);  // way off-screen
         state.cursorActive = false;
         return;
       }
-      const VIEW = 1100;
-      const ux = (mx / VIEW) + 0.5;
-      const uy = (my / VIEW) + 0.5;
+      const __view = window.MotionPlaygroundView || { w: 1100, h: 1100 };
+      const ux = (mx / __view.w) + 0.5;
+      const uy = (my / __view.h) + 0.5;
       state.material.uniforms.cursorUv.value.set(ux, uy);
       state.cursorActive = true;
     },
@@ -2859,7 +2864,18 @@
       }
 
       u.staggerAmount.value = p.stagger;
-      u.grid.value.set(Math.max(2, Math.round(p.cols)), Math.max(2, Math.round(p.rows)));
+      // Live aspect: stretch the plane to cover the visible frustum, and
+      // scale cols/rows proportionally so dot cells stay roughly square.
+      const view = window.MotionPlaygroundView || { w: 1100, h: 1100, aspect: 1 };
+      if (state.mesh){
+        state.mesh.scale.set(view.w / 1100, view.h / 1100, 1);
+      }
+      const baseCols = Math.max(2, Math.round(p.cols));
+      const baseRows = Math.max(2, Math.round(p.rows));
+      const colMul = view.aspect >= 1 ? view.aspect : 1;
+      const rowMul = view.aspect <  1 ? (1 / view.aspect) : 1;
+      u.grid.value.set(Math.max(2, Math.round(baseCols * colMul)),
+                       Math.max(2, Math.round(baseRows * rowMul)));
       u.dotShape.value     = Math.round(p.shape);
       u.dotSize.value      = p.dotSize;
       u.ringWidth.value    = p.ringWidth;
@@ -4194,12 +4210,16 @@
       const data = state.fieldData;
       if (!data) return;
 
-      // Grid layout in world coords. Canvas spans [-V, V]^2.
-      const V = VIEW * 0.5;
+      // Grid layout in world coords. The canvas spans the live ortho
+      // frustum (varies by aspect). The grid fills the visible area so the
+      // cell count grows with the long axis on non-square ratios.
+      const __view = window.MotionPlaygroundView || { w: VIEW, h: VIEW, halfW: VIEW/2, halfH: VIEW/2 };
+      const viewW = __view.w, viewH = __view.h;
+      const V = Math.max(viewW, viewH) * 0.5;  // for legacy field sampling below
       const cellSize = Math.max(1, +p.cellSize || 16);
       const fillFrac = Math.max(0.1, Math.min(2, (+p.fillFrac || 80) / 100));
-      const cols = Math.floor((2 * V) / cellSize);
-      const rows = Math.floor((2 * V) / cellSize);
+      const cols = Math.floor(viewW / cellSize);
+      const rows = Math.floor(viewH / cellSize);
       const totalCells = Math.min(MAX_CELLS, cols * rows);
 
       // Center the grid in the canvas (small leftover margin on right/bottom).
@@ -4263,9 +4283,12 @@
           const wx = x0 + cx * cellSize;
           const wy = y0 - cy * cellSize;
 
-          // Field sampling (with noise warp).
-          let fx = (wx + V) / VIEW;
-          let fy = 1 - (wy + V) / VIEW;
+          // Field sampling (with noise warp). The source field is a square
+          // texture sized to the short axis (VIEW). Cells outside that
+          // square sample at uv outside [0,1] and end up reading the
+          // background — keeping the content centered on non-square aspects.
+          let fx = (wx + VIEW * 0.5) / VIEW;
+          let fy = 1 - (wy + VIEW * 0.5) / VIEW;
           if (warpAmp > 0){
             const nx = perlin3(fx * warpScale, fy * warpScale, wT);
             const ny = perlin3(fx * warpScale + 31.7, fy * warpScale - 17.3, wT + 100);
@@ -5727,12 +5750,34 @@
     // Measure whichever stage-slot the canvas currently lives in.
     const host = stage.parentElement;
     const r = host ? host.getBoundingClientRect() : { width: 520, height: 520 };
-    const size = Math.min(r.width, r.height) || 520;
+    const w = Math.max(1, Math.round(r.width || 520));
+    const h = Math.max(1, Math.round(r.height || 520));
     const dpr = renderer.getPixelRatio();
-    lastPixelSize = size * dpr;
-    renderer.setSize(size, size, false);
-    perspCam.aspect = 1;
+    // Line2 resolution uses the larger axis so thickness stays in-pixels.
+    lastPixelSize = Math.max(w, h) * dpr;
+    renderer.setSize(w, h, false);
+
+    // Ortho camera frustum widens with aspect. Hold VIEW as the SHORT axis
+    // (so the centered content size in world units is preserved across
+    // aspects); the long axis grows by aspect.
+    const aspect = w / h;
+    let halfW, halfH;
+    if (aspect >= 1){ halfH = VIEW / 2; halfW = halfH * aspect; }
+    else            { halfW = VIEW / 2; halfH = halfW / aspect; }
+    orthoCam.left = -halfW; orthoCam.right = halfW;
+    orthoCam.top  =  halfH; orthoCam.bottom = -halfH;
+    orthoCam.updateProjectionMatrix();
+
+    perspCam.aspect = aspect;
     perspCam.updateProjectionMatrix();
+
+    // Expose the live frustum so tools that need to fill the full canvas
+    // (Dots, Halftone) can read it instead of assuming a square VIEW.
+    window.MotionPlaygroundView = {
+      w: halfW * 2, h: halfH * 2,
+      halfW, halfH,
+      aspect,
+    };
     // Push to current animation's Line2 material(s) if present. Poles has
     // an array of per-spoke materials (one per Line2) so it can vary thickness
     // per spoke — update them all so Line2's pixel-thickness stays correct.
@@ -6698,13 +6743,16 @@
   }
 
   // Convert a mouse event to scene-space coordinates honoring pan + zoom.
+  // Uses the live ortho frustum so non-square aspects map cleanly: the
+  // long axis covers more world units than VIEW.
   function eventToWorld(e){
     const rect = stage.getBoundingClientRect();
     const nx = ((e.clientX - rect.left) / rect.width) * 2 - 1;
     const ny = -(((e.clientY - rect.top) / rect.height) * 2 - 1);
+    const view = window.MotionPlaygroundView || { halfW: VIEW * 0.5, halfH: VIEW * 0.5 };
     return {
-      x: nx * (VIEW * 0.5) / camCtl.zoom + camCtl.pan.x,
-      y: ny * (VIEW * 0.5) / camCtl.zoom + camCtl.pan.y
+      x: nx * view.halfW / camCtl.zoom + camCtl.pan.x,
+      y: ny * view.halfH / camCtl.zoom + camCtl.pan.y
     };
   }
 
@@ -7645,7 +7693,15 @@ ${Object.entries(effectFnRegistry).map(([id, reg]) => `  map[${JSON.stringify(id
 var canvas = document.getElementById('stage');
 var renderer = new THREE.WebGLRenderer({ canvas: canvas, antialias: true, alpha: false });
 renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
-renderer.setClearColor((function(){ for (var i = 0; i < LAYERS.length; i++){ if (LAYERS[i].type !== 'effects') return LAYERS[i].bgColor; } return '#ffffff'; })(), 1);
+(function(){
+  for (var i = 0; i < LAYERS.length; i++){
+    if (LAYERS[i].type === 'effects' || LAYERS[i].bgTransparent) continue;
+    renderer.setClearColor(LAYERS[i].bgColor, 1);
+    return;
+  }
+  // No solid-bg layer left → transparent canvas.
+  renderer.setClearColor(0x000000, 0);
+})();
 var scene = new THREE.Scene();
 var camera = new THREE.OrthographicCamera(-LAB_VIEW/2, LAB_VIEW/2, LAB_VIEW/2, -LAB_VIEW/2, -1000, 1000);
 camera.position.z = 10;
@@ -7851,7 +7907,7 @@ tick();
         '    font-family: ui-monospace, "SF Mono", Menlo, monospace; }\n' +
         '  .wrap { width: 100vw; height: 100vh; display: grid; place-items: center; }\n' +
         '  .stage-wrap { position: relative; aspect-ratio: 1 / 1;\n' +
-        '    width: min(100vw, 100vh); background: ' + ((subjects.find(s => s.type !== 'effects') || subjects[0] || { bgColor: '#ffffff' }).bgColor) + '; overflow: hidden; }\n' +
+        '    width: min(100vw, 100vh); background: ' + ((subjects.find(s => s.type !== 'effects' && !s.bgTransparent) || { bgColor: 'transparent' }).bgColor) + '; overflow: hidden; }\n' +
         '  canvas.stage { display: block; width: 100%; height: 100%; }\n' +
         '</style>\n' +
         '</head>\n' +
@@ -9125,11 +9181,38 @@ function renderHalftone(data){
         const picker = document.createElement('input');
         picker.type = 'color';
         picker.value = recipe.subject.bgColor;
+        const applyBg = () => {
+          // Whenever this layer's background toggle changes, we have to ask
+          // rerender() to re-pick the first non-effects, non-transparent
+          // layer's bgColor for the canvas clear color (this layer may or
+          // may not be the one currently driving the clear).
+          if (recipe.transparent || !renderer) return;
+          rerender();
+        };
         picker.addEventListener('input', () => {
           recipe.subject.bgColor = picker.value;
-          if (renderer && !recipe.transparent) renderer.setClearColor(picker.value, 1);
+          applyBg();
         });
         body.appendChild(picker);
+        // Per-layer transparent-background toggle. Honored by rerender() so
+        // the layer behind shows through.
+        const tWrap = document.createElement('label');
+        tWrap.className = 'lab-bg-transparent';
+        tWrap.style.cssText = 'display: inline-flex; gap: 6px; align-items: center; margin-left: 10px; font-size: 12px;';
+        const tChk = document.createElement('input');
+        tChk.type = 'checkbox';
+        tChk.checked = !!recipe.subject.bgTransparent;
+        tChk.addEventListener('change', () => {
+          recipe.subject.bgTransparent = tChk.checked;
+          picker.disabled = tChk.checked;
+          applyBg();
+        });
+        picker.disabled = tChk.checked;
+        const tLbl = document.createElement('span');
+        tLbl.textContent = 'Transparent';
+        tWrap.appendChild(tChk);
+        tWrap.appendChild(tLbl);
+        body.appendChild(tWrap);
       });
 
       // Actions — Import / Reset on top row, three compact Export tiles below.
@@ -10179,10 +10262,14 @@ function renderHalftone(data){
       // composite over it via transparency where their geometry doesn't cover).
       // Transparent overrides any bgColor — clear with alpha 0 so PNG/canvas
       // pixels behind shape geometry are fully see-through.
-      const firstBg = recipe.subjects.find(s => s.type !== 'effects');
-      const bgHex = firstBg ? firstBg.bgColor : '#ffffff';
-      if (recipe.transparent) renderer.setClearColor(0x000000, 0);
-      else renderer.setClearColor(bgHex, 1);
+      // First non-effects layer that still wants a solid background drives
+      // the canvas clear color. If every shape layer has bgTransparent set,
+      // the canvas itself is cleared with alpha 0 so whatever sits behind
+      // (next composite / saved PNG / Lab page chrome) shows through.
+      const firstBg = recipe.subjects.find(s => s.type !== 'effects' && !s.bgTransparent);
+      const allLayerBgsTransparent = !firstBg && recipe.subjects.some(s => s.type !== 'effects');
+      if (recipe.transparent || allLayerBgsTransparent) renderer.setClearColor(0x000000, 0);
+      else renderer.setClearColor(firstBg ? firstBg.bgColor : '#ffffff', 1);
       const restoreActive = recipe.activeLayer;
       for (let i = 0; i < recipe.subjects.length; i++){
         activateLayer(i);
@@ -11361,6 +11448,26 @@ function renderHalftone(data){
         slugify(snap.name) + '.json', 'application/json');
     });
   });
+
+  // Live aspect-ratio: the export-aspect dropdown also drives the
+  // Playground's .stage-wrap aspect-ratio via a CSS custom property.
+  // Changing it immediately resizes the canvas and updates cameras so
+  // every tool re-renders at the chosen ratio.
+  const stageAspectSel = document.querySelector('[data-act="export-aspect"]');
+  if (stageAspectSel){
+    const applyStageAspect = () => {
+      const v = stageAspectSel.value || '1:1';
+      const parts = v.split(':').map(Number);
+      const aw = parts[0] > 0 ? parts[0] : 1;
+      const ah = parts[1] > 0 ? parts[1] : 1;
+      document.documentElement.style.setProperty('--stage-aspect', aw + ' / ' + ah);
+      // Force a synchronous tick so cameras pick up the new size even if
+      // the ResizeObserver hasn't fired yet.
+      if (typeof resize === 'function') resize();
+    };
+    stageAspectSel.addEventListener('change', applyStageAspect);
+    applyStageAspect();
+  }
 
   // Actions-row Transparent checkbox: writes to the active tool's params.
   document.querySelectorAll('[data-act="toggle-transparent"]').forEach(chk => {
