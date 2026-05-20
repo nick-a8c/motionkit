@@ -819,10 +819,11 @@
   //
   // Returns { chars: [ { sampleAt(s) }, ... ] } where each element is one
   // visible character with its own sampler.
-  function buildTextPath(text){
+  function buildTextPath(text, modelScale){
     const FRAME = 1100;
-    const TARGET_W = FRAME * 0.85;
-    const TARGET_H = FRAME * 0.78;
+    const ms = (modelScale != null ? modelScale : 1);
+    const TARGET_W = FRAME * 0.85 * ms;
+    const TARGET_H = FRAME * 0.78 * ms;
 
     const raw = (text == null ? 'TEXT' : String(text));
     let lines = raw.split('|').map(s => s.trim()).slice(0, 3);
@@ -982,6 +983,7 @@
 
     controls: [
       { section: 'Text' },
+      { key: 'sceneScale', label: 'Scene scale', min: 0.1, max: 2.0, step: 0.01, value: 1 },
       { key: 'modelScale', label: 'Model scale', min: 0.1, max: 2.0, step: 0.01, value: 1 },
       { key: 'text',      label: 'Text (use | for new line)', type: 'text', value: 'A8C' },
       { section: 'Colors' },
@@ -1089,7 +1091,7 @@
     },
 
     update(t, p, state){
-      const __ms__ = (p.modelScale != null ? p.modelScale : 1);
+      const __ms__ = (p.sceneScale != null ? p.sceneScale : 1);
       if (state.group) state.group.scale.setScalar(__ms__);
       const __mouseRaw__ = state.mouse;
       if (state.mouse && __ms__ !== 1) state.mouse = { x: state.mouse.x / __ms__, y: state.mouse.y / __ms__ };
@@ -1103,11 +1105,13 @@
         state.material.linewidth = p.lineThickness;
         state.cachedLineThickness = p.lineThickness;
       }
-      // Rebuild path if text changed
-      if (state.cachedText !== p.text){
-        const path = buildTextPath(p.text);
+      // Rebuild path if text or model scale changed
+      const __glyphMs__ = (p.modelScale != null ? p.modelScale : 1);
+      if (state.cachedText !== p.text || state.cachedModelScale !== __glyphMs__){
+        const path = buildTextPath(p.text, __glyphMs__);
         state.chars = path.chars;
         state.cachedText = p.text;
+        state.cachedModelScale = __glyphMs__;
       }
 
       const FPS = 25;
@@ -1534,7 +1538,7 @@
 
     controls: [
       { section: 'Text' },
-      { key: 'modelScale', label: 'Model scale', min: 0.1, max: 2.0, step: 0.01, value: 1 },
+      { key: 'sceneScale', label: 'Scene scale', min: 0.1, max: 2.0, step: 0.01, value: 1 },
       { key: 'text',          label: 'Text (use | for new line)', type: 'text', value: 'A12S | RULE' },
       { key: 'fontScale',     label: 'Text size',           min: 0.4, max: 1.6, step: 0.01, value: 0.71 },
       { key: 'lineGap',       label: 'Vertical distance (px)', min: -100, max: 200, step: 1, value: 20 },
@@ -1609,7 +1613,7 @@
     },
 
     update(t, p, state){
-      if (state.group) state.group.scale.setScalar(p.modelScale != null ? p.modelScale : 1);
+      if (state.group) state.group.scale.setScalar(p.sceneScale != null ? p.sceneScale : 1);
       const c = state.cache;
       const SIZE = state.size;
 
@@ -2018,7 +2022,7 @@
     attractorMode: 'fade',
     controls: [
       { section: 'Layout' },
-      { key: 'modelScale', label: 'Model scale', min: 0.1, max: 2.0, step: 0.01, value: 1 },
+      { key: 'sceneScale', label: 'Scene scale', min: 0.1, max: 2.0, step: 0.01, value: 1 },
       { key: 'rows',       label: 'Rows',         min: 4,  max: 200, step: 1,    value: 22 },
       { key: 'spacing',    label: 'Row spacing',  min: 4,  max: 60,  step: 1,    value: 22 },
       { key: 'rowSamples', label: 'Resolution',   min: 32, max: 400, step: 1,    value: 160 },
@@ -2089,7 +2093,7 @@
     },
 
     update(t, p, state){
-      const __ms__ = (p.modelScale != null ? p.modelScale : 1);
+      const __ms__ = (p.sceneScale != null ? p.sceneScale : 1);
       if (state.group) state.group.scale.setScalar(__ms__);
       const __mouseRaw__ = state.mouse;
       if (state.mouse && __ms__ !== 1) state.mouse = { x: state.mouse.x / __ms__, y: state.mouse.y / __ms__ };
@@ -2570,6 +2574,7 @@
     attractorMode: 'push',
     controls: [
       { section: 'Text' },
+      { key: 'sceneScale', label: 'Scene scale', min: 0.1, max: 2.0, step: 0.01, value: 1 },
       { key: 'modelScale', label: 'Model scale', min: 0.1, max: 2.0, step: 0.01, value: 1 },
       { key: 'text', label: 'Text (| separates frames, up to 5 chars each)',
         type: 'text', value: 'HELLO|WORLD|HI!', maxLength: 80 },
@@ -2675,7 +2680,7 @@
     },
 
     update(t, p, state){
-      const __ms__ = (p.modelScale != null ? p.modelScale : 1);
+      const __ms__ = (p.sceneScale != null ? p.sceneScale : 1);
       if (state.group) state.group.scale.setScalar(__ms__);
       const __mouseRaw__ = state.material.uniforms.cursorUv.value.clone();
       if (__ms__ !== 1 && state.cursorActive) {
@@ -2720,7 +2725,8 @@
         // Frame sequence — rebake textures when text / mask resolution / font changes.
         // Also re-render once when transitioning out of SVG mode (lastSvgCanvas was set).
         const frames = parseFrames(p.text);
-        const fontScale = p.fontScale;
+        const modelScale = (p.modelScale != null ? p.modelScale : 1);
+        const fontScale = p.fontScale * modelScale;
         const seqChanged = frames.join('|') !== state.frames.join('|');
         const sizeChanged = maskRes !== state.maskRes;
         const fontChanged = fontScale !== state.fontScale;
@@ -2875,7 +2881,7 @@
     ctx.globalCompositeOperation = 'source-over';
   }
 
-  function drawText(ctx, text, blurPx){
+  function drawText(ctx, text, blurPx, modelScale){
     ctx.clearRect(0, 0, FIELD_SIZE, FIELD_SIZE);
     ctx.fillStyle = '#ffffff';
     ctx.fillRect(0, 0, FIELD_SIZE, FIELD_SIZE);
@@ -2888,9 +2894,10 @@
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
     // Pick a font size that fits the longest line + line count.
+    const ms = (modelScale != null ? modelScale : 1);
     const widest = lines.reduce((m, l) => Math.max(m, l.length), 1);
-    const sizeByW = (FIELD_SIZE * 0.85) / (widest * 0.55);
-    const sizeByH = (FIELD_SIZE * 0.78) / lines.length;
+    const sizeByW = (FIELD_SIZE * 0.85 * ms) / (widest * 0.55);
+    const sizeByH = (FIELD_SIZE * 0.78 * ms) / lines.length;
     const fontSize = Math.floor(Math.min(sizeByW, sizeByH));
     ctx.font = '900 ' + fontSize + 'px ui-monospace, "SF Mono", Menlo, monospace';
     const lineH = fontSize * 1.05;
@@ -2962,6 +2969,7 @@
 
     controls: [
       { section: 'Source' },
+      { key: 'sceneScale', label: 'Scene scale', min: 0.1, max: 2.0, step: 0.01, value: 1 },
       { key: 'modelScale', label: 'Model scale', min: 0.1, max: 2.0, step: 0.01, value: 1 },
       { key: 'source', label: 'Mode', type: 'choices', value: 0, choices: [
         { value: 0, label: 'Points' },
@@ -3202,7 +3210,7 @@
       if (mode === 0){
         drawGradientPoints(ctx, pts);
       } else if (mode === 1){
-        drawText(ctx, p.text, p.blurPx);
+        drawText(ctx, p.text, p.blurPx, p.modelScale);
       } else if (mode === 2){
         drawSvg(ctx, svg && svg.image, p.blurPx);
       } else {
@@ -3214,7 +3222,7 @@
     },
 
     update(t, p, state){
-      const __ms__ = (p.modelScale != null ? p.modelScale : 1);
+      const __ms__ = (p.sceneScale != null ? p.sceneScale : 1);
       if (state.group) state.group.scale.setScalar(__ms__);
       const __mouseRaw__ = state.mouse;
       if (state.mouse && __ms__ !== 1) state.mouse = { x: state.mouse.x / __ms__, y: state.mouse.y / __ms__ };
@@ -3251,6 +3259,7 @@
       const svgKey = (window.MotionGradientState && window.MotionGradientState.svg && window.MotionGradientState.svg.url) || '';
       const key = [
         Math.round(p.source), p.text || '', +p.blurPx || 0, +p.solidLevel || 0,
+        +(p.modelScale != null ? p.modelScale : 1),
         pts.length, pts.map(pp => (pp.x*1000|0) + ':' + (pp.y*1000|0)).join(','),
         svgKey
       ].join('|');
@@ -3472,7 +3481,7 @@
     });
     ctx.globalCompositeOperation = 'source-over';
   }
-  function drawText(ctx, text, blurPx){
+  function drawText(ctx, text, blurPx, modelScale){
     ctx.clearRect(0, 0, FIELD_SIZE, FIELD_SIZE);
     ctx.fillStyle = '#ffffff'; ctx.fillRect(0, 0, FIELD_SIZE, FIELD_SIZE);
     const raw = (text == null ? '' : String(text));
@@ -3482,9 +3491,10 @@
     ctx.filter = 'blur(' + Math.max(0, +blurPx || 0) + 'px)';
     ctx.fillStyle = '#000000';
     ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    const ms = (modelScale != null ? modelScale : 1);
     const widest = lines.reduce((m, l) => Math.max(m, l.length), 1);
-    const sizeByW = (FIELD_SIZE * 0.85) / (widest * 0.55);
-    const sizeByH = (FIELD_SIZE * 0.78) / lines.length;
+    const sizeByW = (FIELD_SIZE * 0.85 * ms) / (widest * 0.55);
+    const sizeByH = (FIELD_SIZE * 0.78 * ms) / lines.length;
     const fontSize = Math.floor(Math.min(sizeByW, sizeByH));
     ctx.font = '900 ' + fontSize + 'px ui-monospace, "SF Mono", Menlo, monospace';
     const lineH = fontSize * 1.05;
@@ -3604,6 +3614,7 @@
     metaColor: 'rgba(255,255,255,0.4)',
     controls: [
       { section: 'Source' },
+      { key: 'sceneScale', label: 'Scene scale', min: 0.1, max: 2.0, step: 0.01, value: 1 },
       { key: 'modelScale', label: 'Model scale', min: 0.1, max: 2.0, step: 0.01, value: 1 },
       { key: 'source', label: 'Mode', type: 'choices', value: 1, choices: [
         { value: 0, label: 'Points' },
@@ -3840,7 +3851,7 @@
     },
 
     update(t, p, state){
-      const __ms__ = (p.modelScale != null ? p.modelScale : 1);
+      const __ms__ = (p.sceneScale != null ? p.sceneScale : 1);
       if (state.group) state.group.scale.setScalar(__ms__);
       const __mouseRaw__ = state.mouse;
       if (state.mouse && __ms__ !== 1) state.mouse = { x: state.mouse.x / __ms__, y: state.mouse.y / __ms__ };
@@ -3938,6 +3949,7 @@
       const svgKey = (window.MotionHalftoneState && window.MotionHalftoneState.svg && window.MotionHalftoneState.svg.url) || '';
       const fieldKey = [
         Math.round(p.source), p.text || '', +p.blurPx || 0, +p.solidLevel || 0,
+        +(p.modelScale != null ? p.modelScale : 1),
         pts.length, pts.map(pp => (pp.x*1000|0) + ':' + (pp.y*1000|0)).join(','),
         svgKey
       ].join('|');
@@ -3946,7 +3958,7 @@
         const mode = Math.round(p.source);
         const ctx = state.fieldCtx;
         if (mode === 0)       drawPoints(ctx, pts);
-        else if (mode === 1)  drawText(ctx, p.text, p.blurPx);
+        else if (mode === 1)  drawText(ctx, p.text, p.blurPx, p.modelScale);
         else if (mode === 2)  drawSvg(ctx, window.MotionHalftoneState.svg && window.MotionHalftoneState.svg.image, p.blurPx);
         else                  drawSolid(ctx, +p.solidLevel || 0);
         state.fieldData = ctx.getImageData(0, 0, FIELD_SIZE, FIELD_SIZE).data;
@@ -4688,7 +4700,7 @@
     const src  = SEGMENTS.sources[recipe.source.id];
 
     out.push({ section: 'Model' });
-    out.push({ key: 'modelScale', label: 'Model scale', min: 0.1, max: 2.0, step: 0.01, value: 1 });
+    out.push({ key: 'sceneScale', label: 'Scene scale', min: 0.1, max: 2.0, step: 0.01, value: 1 });
     out.push({ section: 'Source — ' + src.label });
     src.controls.forEach(c => out.push({ ...c, key: 'src_' + c.key }));
 
@@ -4985,7 +4997,7 @@
     },
 
     update(t, p, state) {
-      const __ms__ = (p.modelScale != null ? p.modelScale : 1);
+      const __ms__ = (p.sceneScale != null ? p.sceneScale : 1);
       if (state.group) state.group.scale.setScalar(__ms__);
       const __mouseRaw__ = state.mouse;
       if (state.mouse && __ms__ !== 1) state.mouse = { x: state.mouse.x / __ms__, y: state.mouse.y / __ms__ };

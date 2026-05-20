@@ -53,9 +53,15 @@ Three small but user-visible fixes:
     un-subdivided ShapeGeometry (svg_fill / outline), so per-vertex
     deformation has nowhere to land. Marching-squares + subdivision + a
     runtime `writeFillTransforms` would need to be ported in.
-- **Playground "Model scale" control on every tool.** Single slider
-  (0.1×–2×, default 1) on Composer / Glyph / Vinyl / Waves / Dots / Particles
-  / Halftone. Implemented as `state.group.scale.setScalar(p.modelScale ?? 1)`
+- **Playground "Scene scale" + "Model scale".** Two distinct knobs:
+  - **Scene scale** (every tool): `state.group.scale.setScalar(p.sceneScale ?? 1)`
+    — resizes the entire rendered output as a unit, useful for fitting an
+    exported animation to a target frame.
+  - **Model scale** (Glyph / Dots / Particles / Halftone only): multiplies
+    the text-rasterisation target box, so the underlying letterforms grow or
+    shrink at draw time. Each tool's mask cache key now includes
+    `modelScale` so the rasteriser invalidates correctly.
+  Both sliders 0.1×–2×, default 1. Implemented as `state.group.scale.setScalar(p.modelScale ?? 1)`
   at the top of each update. To keep cursor effects coherent at non-1 scales,
   each tool's update wraps its body in a snapshot/restore that brings the
   cursor field into the model's local frame:
