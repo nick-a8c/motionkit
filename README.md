@@ -12,8 +12,7 @@ on Three.js, no build step, no `npm install`. Everything lives in one
 
 Three pages share the same canvas and renderer:
 
-- **Landing** — animated hero (211 small star outlines arranged along a big
-  star, with a cursor-thickening hover halo).
+- **Landing** 
 - **Playground** — gallery of seven tunable animations, each with its own
   controls panel, the shared overlay pass (Gradient · Pixelate · Halftone),
   and full snapshot/HTML/PNG/SVG export.
