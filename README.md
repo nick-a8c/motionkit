@@ -63,7 +63,7 @@ Three pages share the same canvas and renderer:
 |---|---|
 | **JSON** | Lossless snapshot. v2 schema with layers, effects, transparent flag, inlined SVG assets. |
 | **PNG** | Oversampled to 2048² (×1), 4096² (×2), or 6144² (×3). Honors the Transparent toggle. |
-| **SVG** | Real vector elements — polylines for outlines, circles for particle / halftone instances, and `<path fill-rule="evenodd">` paths for deformed Solid Fill / Outline meshes. |
+| **SVG** | Real vector elements. Lab emits polylines, circles, `<path fill-rule="evenodd">` for deformed meshes, etc. Playground tools emit per-tool vector output (polylines for Composer / Glyph / Waves; circles / rects / rings for Dots / Particles / Halftone; Vinyl embeds its composed ring canvas as `<image>`). Pixel-space overlays are dropped on SVG export — use PNG for those. |
 | **HTML** | Self-contained `.html` with Three.js + Line2 from CDN, the animation's IIFE inlined, baked params, and optional PAN / ZOOM interaction (per-export checkboxes). |
 
 ## Run

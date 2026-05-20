@@ -61,7 +61,30 @@ Three small but user-visible fixes:
     the text-rasterisation target box, so the underlying letterforms grow or
     shrink at draw time. Each tool's mask cache key now includes
     `modelScale` so the rasteriser invalidates correctly.
-  Both sliders 0.1×–2×, default 1. Implemented as `state.group.scale.setScalar(p.modelScale ?? 1)`
+  Both sliders 0.1×–2×, default 1.
+- **Playground SVG export.** New "SVG" toolbar button. Each animation
+  declares a `toSvg(state, params)` method that returns an array of SVG
+  element strings already mapped into a `0 0 1024 1024` viewBox. The
+  top-level handler (around line 11442) wraps them with a header + optional
+  background `<rect>` (skipped when Transparent is on) and downloads as
+  `{slug}.svg`. Shared serialization helpers live on
+  `window.MotionSvgHelpers` (defined in Section 4): `polyline`, `polygon`,
+  `circle`, `ring`, `rect`, `text`, `image`, `path`, plus coordinate
+  mapping (`mapX/mapY/mapR`) and `readLineGeomPositions` for pulling flat
+  positions out of `THREE.LineGeometry`'s interleaved buffer. Lab's existing
+  `exportSvg` was lightly refactored to alias these helpers, so it still
+  works unchanged.
+  - Per-tool implementations: Composer / Glyph / Waves emit `<polyline>` per
+    `THREE.Line2`; Dots samples its mask canvas and emits `<circle>` /
+    `<rect>` / ring `<path>` per grid cell; Particles walks an InstancedMesh
+    and emits `<circle>` or `<polygon>` per instance; Halftone walks an
+    InstancedMesh and emits per-cell rotated `<polygon>` / `<circle>` /
+    ring (and embeds each library-mode `CanvasTexture` as a base64
+    `<image>` in library mode); Vinyl falls back to embedding its composed
+    ring+text canvas as a single base64 `<image>`.
+  - Overlays (Gradient / Pixelate / Halftone post-process) are dropped from
+    SVG output by design — they're pixel-space and can't be vectorized.
+    Use PNG to capture the composited output. Implemented as `state.group.scale.setScalar(p.modelScale ?? 1)`
   at the top of each update. To keep cursor effects coherent at non-1 scales,
   each tool's update wraps its body in a snapshot/restore that brings the
   cursor field into the model's local frame:

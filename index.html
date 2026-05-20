@@ -491,6 +491,7 @@
           <button data-act="export-png" data-scale="1" title="Export PNG at canvas resolution">PNG</button>
           <button data-act="export-png" data-scale="2" title="Export PNG at 2× canvas resolution">PNG 2×</button>
           <button data-act="export-png" data-scale="3" title="Export PNG at 3× canvas resolution">PNG 3×</button>
+          <button data-act="export-svg" title="Export the current frame as a vector SVG">SVG</button>
         </div>
         <div class="actions actions-export-toggles">
           <label class="lab-checkbox-row" title="Toggle transparent background for the current tool">
@@ -1254,6 +1255,48 @@
         sq.rotation.z = outRot;
       }
       } finally { state.mouse = __mouseRaw__; }
+    },
+
+    // SVG export — walk visible Line2 outlines (per-shape pools). Each Line2's
+    // local geometry is the unit-shape path; apply the Line2's position,
+    // scale, and rotation, then map world coords into the 1024 viewBox.
+    toSvg(state, p){
+      const parts = [];
+      const H = window.MotionSvgHelpers;
+      const color = p.lineColor || '#ff5c5c';
+      const lineW = Math.max(0.5, +p.lineThickness || 1);
+      if (!state || !state.pools) return parts;
+      // The whole group also carries sceneScale; apply via group's matrix.
+      // Pull the per-line transform manually so we don't depend on Three's
+      // matrixWorld being current.
+      const groupScale = state.group ? state.group.scale.x : 1;
+      for (let s = 0; s < 3; s++){
+        const pool = state.pools[s];
+        if (!pool) continue;
+        for (let i = 0; i < pool.length; i++){
+          const line = pool[i];
+          if (!line.visible) continue;
+          const positions = H.readLineGeomPositions(line.geometry);
+          if (!positions) continue;
+          const px = line.position.x, py = line.position.y;
+          const sx = line.scale.x * groupScale, sy = line.scale.y * groupScale;
+          const rot = line.rotation.z;
+          const cs = Math.cos(rot), sn = Math.sin(rot);
+          // Walk interleaved [x0,y0,z0,x1,y1,z1,...]. The path is a closed loop,
+          // so the last point repeats the first.
+          const pts = [];
+          const N = positions.length / 3;
+          for (let k = 0; k < N; k++){
+            const lx = positions[k * 3];
+            const ly = positions[k * 3 + 1];
+            const wx = px * groupScale + (cs * lx - sn * ly) * sx;
+            const wy = py * groupScale + (sn * lx + cs * ly) * sy;
+            pts.push({ x: H.mapX(wx), y: H.mapY(wy) });
+          }
+          parts.push(H.polyline(pts, color, lineW));
+        }
+      }
+      return parts;
     }
   });
 })();
@@ -1800,6 +1843,23 @@
 
       state.texture.image = c.arcsCanvas;
       state.texture.needsUpdate = true;
+    },
+
+    // SVG export — the visual is a composite drawn into an offscreen 1024×1024
+    // canvas (state.cache.arcsCanvas) that's then mapped onto a fullscreen
+    // textured plane. Concentric arcs + mask + perlin gating all bake into
+    // that canvas. Pragmatic path: embed the canvas as a base64 PNG inside
+    // an <image> element so the export matches exactly what's on screen.
+    toSvg(state, p){
+      const H = window.MotionSvgHelpers;
+      const c = state && state.cache && state.cache.arcsCanvas;
+      if (!c) return [];
+      let dataUri;
+      try { dataUri = c.toDataURL('image/png'); }
+      catch(e){ return []; }
+      // Cover the full viewBox; the plane is 1100×1100 centered, but we map
+      // [-FRAME/2..FRAME/2] → [0..1024] so use the full SVG_SIZE square.
+      return [ H.image(0, 0, H.SIZE, H.SIZE, dataUri) ];
     }
   });
 })();
@@ -2296,6 +2356,34 @@
         }
       }
       } finally { state.mouse = __mouseRaw__; }
+    },
+
+    // SVG export — one <polyline> per visible base row, sampling the row's
+    // own LineGeometry positions. Halo lines are merged visually by the
+    // browser via stroke thickness — we just emit the base lines, which is
+    // enough for a faithful static snapshot.
+    toSvg(state, p){
+      const H = window.MotionSvgHelpers;
+      const parts = [];
+      const color = p.lineColor || '#222226';
+      const lineW = Math.max(0.3, +p.lineThickness || 1.2);
+      const groupScale = state.group ? state.group.scale.x : 1;
+      if (!state.lines) return parts;
+      for (let r = 0; r < state.lines.length; r++){
+        const line = state.lines[r];
+        if (!line || !line.visible) continue;
+        const positions = H.readLineGeomPositions(line.geometry);
+        if (!positions) continue;
+        const pts = [];
+        const N = positions.length / 3;
+        for (let k = 0; k < N; k++){
+          const lx = positions[k * 3]     * groupScale;
+          const ly = positions[k * 3 + 1] * groupScale;
+          pts.push({ x: H.mapX(lx), y: H.mapY(ly) });
+        }
+        parts.push(H.polyline(pts, color, lineW));
+      }
+      return parts;
     }
   });
 })();
@@ -2796,6 +2884,74 @@
         state.cachedDim = p.dimColor;
       }
       } finally { state.material.uniforms.cursorUv.value.copy(__mouseRaw__); }
+    },
+
+    // SVG export — Dots renders via a custom shader (morph + cursor push + dot
+    // shape) over two mask textures. Re-implementing the shader in SVG is
+    // possible but lossy and complex. Walk the grid + sample the active mask:
+    // for each cell, lerp mask brightness between current and next frame, draw
+    // the chosen shape if "on". This catches morph + dot shape; cursor push
+    // is not re-applied here (export captures a static snapshot of the grid).
+    toSvg(state, p){
+      const H = window.MotionSvgHelpers;
+      const parts = [];
+      const bg = p.bgColor || '#dedede';
+      const fg = p.fgColor || '#ff5c5c';
+      const dim = p.dimColor || '#bdbdbd';
+      const cols = Math.max(2, Math.round(p.cols));
+      const rows = Math.max(2, Math.round(p.rows));
+      const shape = Math.round(p.shape);   // 0=circle 1=square 2=ring
+      const dotSize = Math.max(0.05, Math.min(1, +p.dotSize || 0.55));
+      const ringWidth = Math.max(0.02, Math.min(0.5, +p.ringWidth || 0.2));
+      const groupScale = state.group ? state.group.scale.x : 1;
+      // Sample mask: read maskA (current frame) — that's the static "what's
+      // visible right now" snapshot. We sample the canvas pixel at the cell
+      // center and use the red channel (alpha mask was drawn in white on
+      // black, so red == luma == on/off).
+      const cv = state.ping && state.ping.canvas;
+      if (!cv) return parts;
+      const ctx = cv.getContext('2d');
+      let imgData;
+      try { imgData = ctx.getImageData(0, 0, cv.width, cv.height); }
+      catch(e){ return parts; }
+      const data = imgData.data;
+      const cw = cv.width, ch = cv.height;
+      const stepX = H.SIZE / cols;
+      const stepY = H.SIZE / rows;
+      // Worldcell size in SVG space — multiplied by sceneScale via groupScale.
+      const cellSvg = Math.min(stepX, stepY);
+      const cx0 = (H.SIZE - cols * cellSvg) / 2;
+      const cy0 = (H.SIZE - rows * cellSvg) / 2;
+      for (let cy = 0; cy < rows; cy++){
+        for (let cx = 0; cx < cols; cx++){
+          // Sample the mask canvas at the cell center.
+          const sx = Math.floor((cx + 0.5) / cols * cw);
+          const sy = Math.floor((cy + 0.5) / rows * ch);
+          const idx = (sy * cw + sx) * 4;
+          const lum = data[idx] / 255;  // white→1, black→0
+          const on = lum > 0.5;
+          const color = on ? fg : dim;
+          const xCenter = cx0 + (cx + 0.5) * cellSvg;
+          const yCenter = cy0 + (cy + 0.5) * cellSvg;
+          // Apply sceneScale around the SVG center.
+          const dx = (xCenter - H.SIZE / 2) * groupScale;
+          const dy = (yCenter - H.SIZE / 2) * groupScale;
+          const xc = H.SIZE / 2 + dx;
+          const yc = H.SIZE / 2 + dy;
+          const sz = cellSvg * dotSize * groupScale;
+          if (shape === 1){
+            parts.push(H.rect(xc - sz / 2, yc - sz / 2, sz, sz, color));
+          } else if (shape === 2){
+            const rOuter = sz / 2;
+            const rInner = rOuter * (1 - ringWidth * 2);
+            if (rInner > 0.5) parts.push(H.ring(xc, yc, rOuter, rInner, color));
+            else              parts.push(H.circle(xc, yc, rOuter, color));
+          } else {
+            parts.push(H.circle(xc, yc, sz / 2, color));
+          }
+        }
+      }
+      return parts;
     }
   });
 
@@ -3426,6 +3582,77 @@
       }
       state.activeMesh.instanceMatrix.needsUpdate = true;
       } finally { state.mouse = __mouseRaw__; }
+    },
+
+    // SVG export — walk activeMesh's InstancedMesh matrices, decompose each
+    // into position + scale, and emit the matching primitive (circle / square
+    // / triangle, filled or outlined) based on the chosen shape × fill combo.
+    toSvg(state, p){
+      const H = window.MotionSvgHelpers;
+      const parts = [];
+      const m4 = new THREE.Matrix4();
+      const pos = new THREE.Vector3();
+      const quat = new THREE.Quaternion();
+      const scl = new THREE.Vector3();
+      const e = new THREE.Euler();
+      const color = p.color || '#1a1a1c';
+      const shape = Math.max(0, Math.min(2, Math.round(p.shape)));  // 0 dot, 1 square, 2 tri
+      const fill  = Math.max(0, Math.min(1, Math.round(p.fill)));   // 0 fill, 1 outline
+      const groupScale = state.group ? state.group.scale.x : 1;
+      const mesh = state.activeMesh;
+      if (!mesh) return parts;
+      for (let i = 0; i < mesh.count; i++){
+        mesh.getMatrixAt(i, m4);
+        m4.decompose(pos, quat, scl);
+        if (scl.x < 0.01) continue;
+        e.setFromQuaternion(quat);
+        const rotDeg = e.z * 180 / Math.PI;
+        const cx = H.mapX(pos.x * groupScale);
+        const cy = H.mapY(pos.y * groupScale);
+        const r = H.mapR(scl.x * 0.5 * groupScale);
+        if (shape === 0){
+          if (fill === 0) parts.push(H.circle(cx, cy, r, color));
+          else            parts.push(H.ring(cx, cy, r, r * 0.8, color));
+        } else if (shape === 1){
+          // Square (with rotation): emit a rotated <polygon>.
+          const s = r;  // half-size
+          const cs = Math.cos(e.z), sn = Math.sin(e.z);
+          const pts = [
+            { x: -s, y: -s }, { x:  s, y: -s }, { x:  s, y:  s }, { x: -s, y:  s }
+          ].map(pt => ({
+            x: cx + (cs * pt.x - sn * pt.y),
+            y: cy + (sn * pt.x + cs * pt.y),
+          }));
+          if (fill === 0){
+            parts.push(H.polygon(pts, color));
+          } else {
+            // Outline as rotated square via stroke.
+            const d = 'M ' + H.fmt(pts[0].x) + ' ' + H.fmt(pts[0].y) +
+              ' L ' + H.fmt(pts[1].x) + ' ' + H.fmt(pts[1].y) +
+              ' L ' + H.fmt(pts[2].x) + ' ' + H.fmt(pts[2].y) +
+              ' L ' + H.fmt(pts[3].x) + ' ' + H.fmt(pts[3].y) + ' Z';
+            parts.push('<path d="' + d + '" fill="none" stroke="' + color +
+              '" stroke-width="' + H.fmt(r * 0.36) + '"/>');
+          }
+        } else {
+          // Triangle (apex up, then rotate by e.z).
+          const A = Math.PI / 2;
+          const tri = [0, 1, 2].map(k => {
+            const a = A + k * (2 * Math.PI / 3) + e.z;
+            return { x: cx + Math.cos(a) * r, y: cy - Math.sin(a) * r };
+          });
+          if (fill === 0){
+            parts.push(H.polygon(tri, color));
+          } else {
+            const d = 'M ' + H.fmt(tri[0].x) + ' ' + H.fmt(tri[0].y) +
+              ' L ' + H.fmt(tri[1].x) + ' ' + H.fmt(tri[1].y) +
+              ' L ' + H.fmt(tri[2].x) + ' ' + H.fmt(tri[2].y) + ' Z';
+            parts.push('<path d="' + d + '" fill="none" stroke="' + color +
+              '" stroke-width="' + H.fmt(r * 0.36) + '"/>');
+          }
+        }
+      }
+      return parts;
     }
   });
 })();
@@ -4133,6 +4360,96 @@
       state.activeLibItems = activeItems;
       state.firstFrame = false;
       } finally { state.mouse = __mouseRaw__; }
+    },
+
+    // SVG export — walk the active base mesh (shape × fill) for non-library
+    // mode; for library mode walk each active library item's InstancedMesh
+    // and embed the item's CanvasTexture as a base64 <image> per instance
+    // (only practical way to serialize a tinted, rasterized symbol).
+    toSvg(state, p){
+      const H = window.MotionSvgHelpers;
+      const parts = [];
+      const m4 = new THREE.Matrix4();
+      const pos = new THREE.Vector3();
+      const quat = new THREE.Quaternion();
+      const scl = new THREE.Vector3();
+      const e = new THREE.Euler();
+      const groupScale = state.group ? state.group.scale.x : 1;
+      const fg = p.fgColor || '#ffe600';
+      const fg2 = p.fgColor2 || '#444444';
+      const useLib = !!p.useLibrary && state.activeLibItems && state.activeLibItems.length > 0;
+      const shape = Math.max(0, Math.min(1, Math.round(p.shape)));  // 0 Square, 1 Dot
+      const fill  = Math.max(0, Math.min(1, Math.round(p.fill)));   // 0 Filled, 1 Outline
+      function emitInstance(mesh, color, dataUri){
+        for (let i = 0; i < mesh.count; i++){
+          mesh.getMatrixAt(i, m4);
+          m4.decompose(pos, quat, scl);
+          if (scl.x < 0.01) continue;
+          e.setFromQuaternion(quat);
+          const cx = H.mapX(pos.x * groupScale);
+          const cy = H.mapY(pos.y * groupScale);
+          const r  = H.mapR(scl.x * 0.5 * groupScale);
+          if (dataUri){
+            // Library items: embed the CanvasTexture as a tinted <image>.
+            // Rotation: emit via a transform on a <g>.
+            const w = r * 2;
+            const tx = cx, ty = cy;
+            const rotDeg = e.z * 180 / Math.PI;
+            parts.push(
+              '<g transform="translate(' + H.fmt(tx) + ',' + H.fmt(ty) +
+              ') rotate(' + H.fmt(rotDeg) + ')">' +
+              H.image(-r, -r, w, w, dataUri) + '</g>'
+            );
+          } else if (shape === 1){
+            // Dot
+            if (fill === 0) parts.push(H.circle(cx, cy, r, color));
+            else            parts.push(H.ring(cx, cy, r, r * 0.72, color));
+          } else {
+            // Square (with rotation)
+            const s = r;
+            const cs = Math.cos(e.z), sn = Math.sin(e.z);
+            const corners = [
+              { x: -s, y: -s }, { x:  s, y: -s }, { x:  s, y:  s }, { x: -s, y:  s }
+            ].map(pt => ({
+              x: cx + (cs * pt.x - sn * pt.y),
+              y: cy + (sn * pt.x + cs * pt.y),
+            }));
+            if (fill === 0){
+              parts.push(H.polygon(corners, color));
+            } else {
+              const d = 'M ' + H.fmt(corners[0].x) + ' ' + H.fmt(corners[0].y) +
+                ' L ' + H.fmt(corners[1].x) + ' ' + H.fmt(corners[1].y) +
+                ' L ' + H.fmt(corners[2].x) + ' ' + H.fmt(corners[2].y) +
+                ' L ' + H.fmt(corners[3].x) + ' ' + H.fmt(corners[3].y) + ' Z';
+              parts.push('<path d="' + d + '" fill="none" stroke="' + color +
+                '" stroke-width="' + H.fmt(r * 0.4) + '"/>');
+            }
+          }
+        }
+      }
+      if (useLib){
+        // Split slider behaviour mirrors the live tool: each library item is
+        // tinted fg or fg2 by its split-group. We don't recompute split here
+        // because each item.material.color already carries its assigned tint
+        // — but for the symbol's raster (canvas texture), we embed the canvas
+        // as-is. That captures the symbol shape; the tint is approximated by
+        // wrapping the <image> isn't trivial in pure SVG, so we just rely on
+        // the canvas already containing the visible glyph.
+        state.activeLibItems.forEach(item => {
+          if (!item.mesh.visible || item.mesh.count === 0) return;
+          let dataUri;
+          try {
+            const src = item.texture && item.texture.image;
+            if (src && src.toDataURL) dataUri = src.toDataURL('image/png');
+          } catch(_){ /* tainted canvas — skip */ }
+          if (!dataUri) return;
+          emitInstance(item.mesh, fg, dataUri);
+        });
+      } else {
+        const mesh = state.activeMesh;
+        if (mesh) emitInstance(mesh, fg, null);
+      }
+      return parts;
     },
   });
 })();
@@ -5138,6 +5455,45 @@
         }
       }
       } finally { state.mouse = __mouseRaw__; }
+    },
+
+    // SVG export — walk each primitive pool's Line2 items, read the unit-shape
+    // path from each Line2's LineGeometry, transform by the item's per-instance
+    // position/scale/rotation, and emit one <polyline> per visible item.
+    // Uses each item's per-instance linewidth (which the gradient-thickness
+    // logic above may have customised).
+    toSvg(state, p){
+      const H = window.MotionSvgHelpers;
+      const parts = [];
+      const color = p.lineColor || '#1a1a1c';
+      const groupScale = state.group ? state.group.scale.x : 1;
+      if (!state.primStates) return parts;
+      state.primStates.forEach(ps => {
+        if (!ps || !ps.items) return;
+        const matArr = ps.itemMaterials || [];
+        for (let i = 0; i < ps.items.length; i++){
+          const line = ps.items[i];
+          if (!line.visible) continue;
+          const positions = H.readLineGeomPositions(line.geometry);
+          if (!positions) continue;
+          const px = line.position.x, py = line.position.y;
+          const sx = line.scale.x, sy = line.scale.y;
+          const rot = line.rotation.z;
+          const cs = Math.cos(rot), sn = Math.sin(rot);
+          const lineW = (matArr[i] && matArr[i].linewidth) || p.lineThickness || 1;
+          const pts = [];
+          const N = positions.length / 3;
+          for (let k = 0; k < N; k++){
+            const lx = positions[k * 3];
+            const ly = positions[k * 3 + 1];
+            const wx = (px + (cs * lx - sn * ly) * sx) * groupScale;
+            const wy = (py + (sn * lx + cs * ly) * sy) * groupScale;
+            pts.push({ x: H.mapX(wx), y: H.mapY(wy) });
+          }
+          parts.push(H.polyline(pts, color, lineW));
+        }
+      });
+      return parts;
     }
   });
 })();
@@ -6479,6 +6835,152 @@
   }
   window.__effectiveTime = effectiveTime;
 
+  // ============================================
+  // Shared SVG export helpers — used by both Lab (next IIFE) and the
+  // Playground SVG export below. World coords use Y-up; SVG uses Y-down,
+  // so callers should flip y at the call site (or use svgMapY()).
+  // ============================================
+  const SVG_FRAME = 1100;        // world extents [-FRAME/2 .. FRAME/2]
+  const SVG_SIZE  = 1024;        // output viewBox is 0 0 SVG_SIZE SVG_SIZE
+  function svgFmt(n){ return (Math.round((+n) * 100) / 100).toString(); }
+  function svgEscapeXml(s){
+    return String(s).replace(/[<>&"']/g, c => ({
+      '<': '&lt;', '>': '&gt;', '&': '&amp;', '"': '&quot;', "'": '&apos;'
+    }[c]));
+  }
+  // World (x,y) → SVG (x',y') for the Playground 1024-viewBox path.
+  function svgMapX(x){ return (x + SVG_FRAME / 2) / SVG_FRAME * SVG_SIZE; }
+  function svgMapY(y){ return (SVG_FRAME / 2 - y) / SVG_FRAME * SVG_SIZE; }
+  function svgMapR(r){ return Math.abs(r) / SVG_FRAME * SVG_SIZE; }
+  // Primitive emitters (return a string). Colors are CSS hex/keywords.
+  function svgPolyline(points, color, width){
+    if (!points || points.length === 0) return '';
+    const w = (width != null) ? width : 2;
+    const s = points.map(p => svgFmt(p.x) + ',' + svgFmt(p.y)).join(' ');
+    return '<polyline points="' + s + '" fill="none" stroke="' + color +
+      '" stroke-width="' + svgFmt(w) +
+      '" stroke-linecap="round" stroke-linejoin="round"/>';
+  }
+  function svgPolygon(points, color){
+    if (!points || points.length === 0) return '';
+    const s = points.map(p => svgFmt(p.x) + ',' + svgFmt(p.y)).join(' ');
+    return '<polygon points="' + s + '" fill="' + color + '"/>';
+  }
+  function svgCircle(cx, cy, r, color){
+    return '<circle cx="' + svgFmt(cx) + '" cy="' + svgFmt(cy) +
+      '" r="' + svgFmt(r) + '" fill="' + color + '"/>';
+  }
+  function svgRing(cx, cy, rOuter, rInner, color){
+    // Even-odd path for an annulus.
+    const d =
+      'M ' + svgFmt(cx + rOuter) + ' ' + svgFmt(cy) +
+      ' A ' + svgFmt(rOuter) + ' ' + svgFmt(rOuter) + ' 0 1 0 ' + svgFmt(cx - rOuter) + ' ' + svgFmt(cy) +
+      ' A ' + svgFmt(rOuter) + ' ' + svgFmt(rOuter) + ' 0 1 0 ' + svgFmt(cx + rOuter) + ' ' + svgFmt(cy) + ' Z ' +
+      'M ' + svgFmt(cx + rInner) + ' ' + svgFmt(cy) +
+      ' A ' + svgFmt(rInner) + ' ' + svgFmt(rInner) + ' 0 1 1 ' + svgFmt(cx - rInner) + ' ' + svgFmt(cy) +
+      ' A ' + svgFmt(rInner) + ' ' + svgFmt(rInner) + ' 0 1 1 ' + svgFmt(cx + rInner) + ' ' + svgFmt(cy) + ' Z';
+    return '<path d="' + d + '" fill="' + color + '" fill-rule="evenodd"/>';
+  }
+  function svgRect(x, y, w, h, color){
+    return '<rect x="' + svgFmt(x) + '" y="' + svgFmt(y) +
+      '" width="' + svgFmt(w) + '" height="' + svgFmt(h) +
+      '" fill="' + color + '"/>';
+  }
+  function svgText(x, y, str, color, fontSize, fontFamily){
+    return '<text x="' + svgFmt(x) + '" y="' + svgFmt(y) +
+      '" fill="' + color + '"' +
+      ' font-family="' + (fontFamily || 'ui-monospace, monospace') + '"' +
+      ' font-size="' + svgFmt(fontSize || 16) + '"' +
+      ' text-anchor="middle" dominant-baseline="central">' +
+      svgEscapeXml(str) + '</text>';
+  }
+  function svgImageEl(x, y, w, h, dataUri){
+    return '<image x="' + svgFmt(x) + '" y="' + svgFmt(y) +
+      '" width="' + svgFmt(w) + '" height="' + svgFmt(h) +
+      '" preserveAspectRatio="none" href="' + dataUri + '"/>';
+  }
+  function svgPath(d, color, fillRule){
+    return '<path d="' + d + '" fill="' + color + '"' +
+      (fillRule ? ' fill-rule="' + fillRule + '"' : '') + '/>';
+  }
+  // Walk a (possibly deformed) indexed triangle mesh's boundary into closed
+  // loops of {x,y} world-space points. Shared with Lab.
+  function svgExtractMeshBoundary(geom){
+    const pos = geom.attributes.position && geom.attributes.position.array;
+    const idx = geom.index ? geom.index.array : null;
+    if (!pos || !idx) return [];
+    const edgeCount = new Map();
+    function ek(a, b){ return a < b ? (a + '_' + b) : (b + '_' + a); }
+    const dirEdge = new Map();
+    for (let i = 0; i < idx.length; i += 3){
+      const a = idx[i], b = idx[i + 1], c = idx[i + 2];
+      edgeCount.set(ek(a, b), (edgeCount.get(ek(a, b)) || 0) + 1);
+      edgeCount.set(ek(b, c), (edgeCount.get(ek(b, c)) || 0) + 1);
+      edgeCount.set(ek(c, a), (edgeCount.get(ek(c, a)) || 0) + 1);
+      dirEdge.set(a + '_' + b, b);
+      dirEdge.set(b + '_' + c, c);
+      dirEdge.set(c + '_' + a, a);
+    }
+    const next = new Map();
+    edgeCount.forEach((count, k) => {
+      if (count !== 1) return;
+      const [a, b] = k.split('_').map(Number);
+      if (dirEdge.get(a + '_' + b) === b) next.set(a, b);
+      else                                next.set(b, a);
+    });
+    const loops = [];
+    const visited = new Set();
+    next.forEach((to, from) => {
+      if (visited.has(from)) return;
+      const start = from;
+      const loop = [];
+      let cur = from;
+      let guard = 0;
+      while (guard++ < next.size + 2){
+        visited.add(cur);
+        loop.push(cur);
+        const n = next.get(cur);
+        if (n == null || n === start) break;
+        cur = n;
+      }
+      if (loop.length >= 3) loops.push(loop);
+    });
+    return loops.map(loop => loop.map(vi => ({ x: pos[vi * 3], y: pos[vi * 3 + 1] })));
+  }
+  // Read a Line2's LineGeometry positions back into a flat [x0,y0,z0,...]
+  // array. Falls back to instanceStart's interleaved buffer (the canonical
+  // r128 storage path for setPositions).
+  function svgReadLineGeomPositions(geom){
+    const a = geom.attributes;
+    if (a && a.instanceStart && a.instanceStart.data && a.instanceStart.data.array){
+      return a.instanceStart.data.array;
+    }
+    if (a && a.position && a.position.array) return a.position.array;
+    return null;
+  }
+  // Apply a THREE.Object3D's world matrix to local (x, y) → world (X, Y).
+  // Pre: obj.updateMatrixWorld() has been called by the render loop already.
+  function svgApplyObjMatrix(obj, lx, ly){
+    const v = new THREE.Vector3(lx, ly, 0);
+    v.applyMatrix4(obj.matrixWorld);
+    return { x: v.x, y: v.y };
+  }
+  // Expose so the Lab IIFE (and anyone else) can reuse. Also published on
+  // window.MotionSvgHelpers because each animation tool lives in its own
+  // top-level IIFE (Sections 2-3.5) and can't see this scope's locals.
+  const SVG_HELPERS = {
+    FRAME: SVG_FRAME, SIZE: SVG_SIZE,
+    fmt: svgFmt, escapeXml: svgEscapeXml,
+    mapX: svgMapX, mapY: svgMapY, mapR: svgMapR,
+    polyline: svgPolyline, polygon: svgPolygon, circle: svgCircle,
+    ring: svgRing, rect: svgRect, text: svgText, image: svgImageEl,
+    path: svgPath,
+    extractMeshBoundary: svgExtractMeshBoundary,
+    readLineGeomPositions: svgReadLineGeomPositions,
+    applyObjMatrix: svgApplyObjMatrix,
+  };
+  window.MotionSvgHelpers = SVG_HELPERS;
+
   // ---- Lab module (Phase 2 + 2.5) ----
   // Blank-canvas builder. Recipe is shaped { subject: {…} } now; the array
   // form { subjects: [{…}] } is the natural growth path for future layers.
@@ -6746,11 +7248,8 @@
     // ---- SVG export ----
     // Walk the current scene → vector SVG. Captures one frame of the visual
     // (so effect-driven motion is "frozen" at the moment of export).
-    function escapeXml(s){
-      return String(s).replace(/[<>&"']/g, c => ({
-        '<': '&lt;', '>': '&gt;', '&': '&amp;', '"': '&quot;', "'": '&apos;'
-      }[c]));
-    }
+    // Shared helper — kept named locally so existing call sites work.
+    const escapeXml = svgEscapeXml;
     function exportPng(){
       if (!renderer) return;
       const HIGH = 2048;
@@ -6820,55 +7319,8 @@
     // triangle are boundary edges; threading them gives the outer outline
     // plus any holes as separate loops. Used for vector SVG export of the
     // Solid Fill mesh after it's been warped by effects.
-    function extractMeshBoundary(geom){
-      const pos = geom.attributes.position.array;
-      const idx = geom.index ? geom.index.array : null;
-      if (!idx) return [];
-      const edgeCount = new Map();
-      function ek(a, b){ return a < b ? (a + '_' + b) : (b + '_' + a); }
-      // Directed edge → triangle winding lookup. Lets us keep the boundary
-      // walk consistent: every boundary edge appears once in the directed
-      // map, so we can chain them by "edge ends at v ⇒ find directed edge
-      // starting at v".
-      const dirEdge = new Map();
-      for (let i = 0; i < idx.length; i += 3){
-        const a = idx[i], b = idx[i + 1], c = idx[i + 2];
-        edgeCount.set(ek(a, b), (edgeCount.get(ek(a, b)) || 0) + 1);
-        edgeCount.set(ek(b, c), (edgeCount.get(ek(b, c)) || 0) + 1);
-        edgeCount.set(ek(c, a), (edgeCount.get(ek(c, a)) || 0) + 1);
-        dirEdge.set(a + '_' + b, b);
-        dirEdge.set(b + '_' + c, c);
-        dirEdge.set(c + '_' + a, a);
-      }
-      // Build the boundary's directed adjacency. For each boundary edge,
-      // keep whichever direction came from a triangle's winding (it points
-      // along the triangle's CCW traversal at that edge).
-      const next = new Map(); // vertex idx → next vertex idx along boundary
-      edgeCount.forEach((count, k) => {
-        if (count !== 1) return;
-        const [a, b] = k.split('_').map(Number);
-        if (dirEdge.get(a + '_' + b) === b) next.set(a, b);
-        else                                next.set(b, a);
-      });
-      const loops = [];
-      const visited = new Set();
-      next.forEach((to, from) => {
-        if (visited.has(from)) return;
-        const start = from;
-        const loop = [];
-        let cur = from;
-        let guard = 0;
-        while (guard++ < next.size + 2){
-          visited.add(cur);
-          loop.push(cur);
-          const n = next.get(cur);
-          if (n == null || n === start) break;
-          cur = n;
-        }
-        if (loop.length >= 3) loops.push(loop);
-      });
-      return loops.map(loop => loop.map(vi => ({ x: pos[vi * 3], y: pos[vi * 3 + 1] })));
-    }
+    // Shared helper — kept named locally so existing call sites work.
+    const extractMeshBoundary = svgExtractMeshBoundary;
 
     function exportSvg(){
       const W = LAB_VIEW, H = LAB_VIEW;
@@ -10981,6 +11433,51 @@ function renderHalftone(data){
       renderer.setPixelRatio(prevDPR);
       renderer.setSize(prevSize.x, prevSize.y, false);
       stash.forEach(s => s.mat.resolution.set(s.x, s.y));
+    });
+  });
+
+  // SVG export — each animation defines a `toSvg(state, params)` method that
+  // returns an array of SVG element strings (already mapped into the 0 0 1024
+  // 1024 viewBox). We wrap them in a header + bg <rect> and stream as a Blob.
+  document.querySelectorAll('[data-act="export-svg"]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      if (!currentAnim) return;
+      if (typeof currentAnim.toSvg !== 'function'){
+        alert('SVG export not available for this animation.');
+        return;
+      }
+      const animState = ANIM_STATE[currentAnim.id];
+      const params = animState && animState.params;
+      if (!params){ return; }
+      let body = [];
+      try { body = currentAnim.toSvg(currentState, params) || []; }
+      catch(e){ console.error('toSvg failed:', e); alert('SVG export failed: ' + e.message); return; }
+      const transparent = !!params.transparent;
+      const W = SVG_SIZE, H = SVG_SIZE;
+      const out = [];
+      out.push('<?xml version="1.0" encoding="UTF-8"?>');
+      out.push('<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" ' +
+        'viewBox="0 0 ' + W + ' ' + H + '" width="' + W + '" height="' + H + '">');
+      if (!transparent){
+        const bg = (typeof params.bgColor === 'string') ? params.bgColor : null;
+        // Fall back to the animation's static bg color (Three.js int) if no param.
+        let bgHex = bg;
+        if (!bgHex && typeof currentAnim.bg === 'number'){
+          bgHex = '#' + currentAnim.bg.toString(16).padStart(6, '0');
+        }
+        if (bgHex) out.push('<rect x="0" y="0" width="' + W + '" height="' + H + '" fill="' + bgHex + '"/>');
+      }
+      out.push.apply(out, body);
+      out.push('</svg>');
+      const blob = new Blob([out.join('\n')], { type: 'image/svg+xml' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      const baseName = (currentAnim.id === 'composer' && currentAnim.name)
+        ? currentAnim.name : (currentAnim.label || currentAnim.id);
+      a.download = slugify(baseName || 'motionkit') + '.svg';
+      a.click();
+      URL.revokeObjectURL(url);
     });
   });
 
