@@ -982,6 +982,7 @@
 
     controls: [
       { section: 'Text' },
+      { key: 'modelScale', label: 'Model scale', min: 0.1, max: 2.0, step: 0.01, value: 1 },
       { key: 'text',      label: 'Text (use | for new line)', type: 'text', value: 'A8C' },
       { section: 'Colors' },
       { key: 'bgColor',   label: 'Background color', type: 'color', value: '#dedede' },
@@ -1071,6 +1072,7 @@
       });
 
       return {
+        group,
         pools,
         material: mat,
         // Sentinel value: -1 ensures the first frame's "shape changed" check
@@ -1087,6 +1089,11 @@
     },
 
     update(t, p, state){
+      const __ms__ = (p.modelScale != null ? p.modelScale : 1);
+      if (state.group) state.group.scale.setScalar(__ms__);
+      const __mouseRaw__ = state.mouse;
+      if (state.mouse && __ms__ !== 1) state.mouse = { x: state.mouse.x / __ms__, y: state.mouse.y / __ms__ };
+      try {
       // Live color update — Three.js material color is mutable, just call .set
       if (p.lineColor && p.lineColor !== state.cachedLineColor){
         state.material.color.set(p.lineColor);
@@ -1242,6 +1249,7 @@
         sq.scale.set(outScale, outScale, 1);
         sq.rotation.z = outRot;
       }
+      } finally { state.mouse = __mouseRaw__; }
     }
   });
 })();
@@ -1526,6 +1534,7 @@
 
     controls: [
       { section: 'Text' },
+      { key: 'modelScale', label: 'Model scale', min: 0.1, max: 2.0, step: 0.01, value: 1 },
       { key: 'text',          label: 'Text (use | for new line)', type: 'text', value: 'A12S | RULE' },
       { key: 'fontScale',     label: 'Text size',           min: 0.4, max: 1.6, step: 0.01, value: 0.71 },
       { key: 'lineGap',       label: 'Vertical distance (px)', min: -100, max: 200, step: 1, value: 20 },
@@ -1581,6 +1590,7 @@
       group.add(mesh);
 
       return {
+        group,
         mesh,
         material: mat,
         texture,
@@ -1599,6 +1609,7 @@
     },
 
     update(t, p, state){
+      if (state.group) state.group.scale.setScalar(p.modelScale != null ? p.modelScale : 1);
       const c = state.cache;
       const SIZE = state.size;
 
@@ -2007,6 +2018,7 @@
     attractorMode: 'fade',
     controls: [
       { section: 'Layout' },
+      { key: 'modelScale', label: 'Model scale', min: 0.1, max: 2.0, step: 0.01, value: 1 },
       { key: 'rows',       label: 'Rows',         min: 4,  max: 200, step: 1,    value: 22 },
       { key: 'spacing',    label: 'Row spacing',  min: 4,  max: 60,  step: 1,    value: 22 },
       { key: 'rowSamples', label: 'Resolution',   min: 32, max: 400, step: 1,    value: 160 },
@@ -2077,6 +2089,11 @@
     },
 
     update(t, p, state){
+      const __ms__ = (p.modelScale != null ? p.modelScale : 1);
+      if (state.group) state.group.scale.setScalar(__ms__);
+      const __mouseRaw__ = state.mouse;
+      if (state.mouse && __ms__ !== 1) state.mouse = { x: state.mouse.x / __ms__, y: state.mouse.y / __ms__ };
+      try {
       // ---- Style caches ----
       if (p.lineColor !== state.cachedLineColor){
         state.lineCol.set(p.lineColor);
@@ -2274,6 +2291,7 @@
           state.haloLines[r].geometry.setColors(haloCol);
         }
       }
+      } finally { state.mouse = __mouseRaw__; }
     }
   });
 })();
@@ -2552,6 +2570,7 @@
     attractorMode: 'push',
     controls: [
       { section: 'Text' },
+      { key: 'modelScale', label: 'Model scale', min: 0.1, max: 2.0, step: 0.01, value: 1 },
       { key: 'text', label: 'Text (| separates frames, up to 5 chars each)',
         type: 'text', value: 'HELLO|WORLD|HI!', maxLength: 80 },
       { key: 'hold',  label: 'Hold (s)',  min: 0.2, max: 5,   step: 0.1, value: 1.2 },
@@ -2656,6 +2675,14 @@
     },
 
     update(t, p, state){
+      const __ms__ = (p.modelScale != null ? p.modelScale : 1);
+      if (state.group) state.group.scale.setScalar(__ms__);
+      const __mouseRaw__ = state.material.uniforms.cursorUv.value.clone();
+      if (__ms__ !== 1 && state.cursorActive) {
+        const cu = state.material.uniforms.cursorUv.value;
+        cu.set((cu.x - 0.5) / __ms__ + 0.5, (cu.y - 0.5) / __ms__ + 0.5);
+      }
+      try {
       const u = state.material.uniforms;
       const maskRes = Math.max(64, Math.min(1024, Math.round(p.maskRes / 32) * 32));
 
@@ -2762,6 +2789,7 @@
         u.dimRgb.value.set(c.r, c.g, c.b);
         state.cachedDim = p.dimColor;
       }
+      } finally { state.material.uniforms.cursorUv.value.copy(__mouseRaw__); }
     }
   });
 
@@ -2934,6 +2962,7 @@
 
     controls: [
       { section: 'Source' },
+      { key: 'modelScale', label: 'Model scale', min: 0.1, max: 2.0, step: 0.01, value: 1 },
       { key: 'source', label: 'Mode', type: 'choices', value: 0, choices: [
         { value: 0, label: 'Points' },
         { value: 1, label: 'Text' },
@@ -3113,6 +3142,7 @@
       const dummy = new THREE.Object3D();
 
       return {
+        group,
         material: mat,
         meshes, activeMesh: meshes[0][0],
         cachedShape: -1, cachedFill: -1,
@@ -3184,6 +3214,11 @@
     },
 
     update(t, p, state){
+      const __ms__ = (p.modelScale != null ? p.modelScale : 1);
+      if (state.group) state.group.scale.setScalar(__ms__);
+      const __mouseRaw__ = state.mouse;
+      if (state.mouse && __ms__ !== 1) state.mouse = { x: state.mouse.x / __ms__, y: state.mouse.y / __ms__ };
+      try {
       // Live material updates.
       if (p.color !== state.cachedColor){
         state.material.color.set(p.color || '#1a1a1c');
@@ -3381,6 +3416,7 @@
         state.activeMesh.setMatrixAt(i, dummy.matrix);
       }
       state.activeMesh.instanceMatrix.needsUpdate = true;
+      } finally { state.mouse = __mouseRaw__; }
     }
   });
 })();
@@ -3568,6 +3604,7 @@
     metaColor: 'rgba(255,255,255,0.4)',
     controls: [
       { section: 'Source' },
+      { key: 'modelScale', label: 'Model scale', min: 0.1, max: 2.0, step: 0.01, value: 1 },
       { key: 'source', label: 'Mode', type: 'choices', value: 1, choices: [
         { value: 0, label: 'Points' },
         { value: 1, label: 'Text' },
@@ -3803,6 +3840,11 @@
     },
 
     update(t, p, state){
+      const __ms__ = (p.modelScale != null ? p.modelScale : 1);
+      if (state.group) state.group.scale.setScalar(__ms__);
+      const __mouseRaw__ = state.mouse;
+      if (state.mouse && __ms__ !== 1) state.mouse = { x: state.mouse.x / __ms__, y: state.mouse.y / __ms__ };
+      try {
       // Ink-color refresh for the base (no-library) path — library-item
       // materials are colored per-frame below based on their ink/bg group.
       if (p.fgColor !== state.cachedFg){
@@ -4078,6 +4120,7 @@
       }
       state.activeLibItems = activeItems;
       state.firstFrame = false;
+      } finally { state.mouse = __mouseRaw__; }
     },
   });
 })();
@@ -4644,6 +4687,8 @@
     const out = [];
     const src  = SEGMENTS.sources[recipe.source.id];
 
+    out.push({ section: 'Model' });
+    out.push({ key: 'modelScale', label: 'Model scale', min: 0.1, max: 2.0, step: 0.01, value: 1 });
     out.push({ section: 'Source — ' + src.label });
     src.controls.forEach(c => out.push({ ...c, key: 'src_' + c.key }));
 
@@ -4940,6 +4985,11 @@
     },
 
     update(t, p, state) {
+      const __ms__ = (p.modelScale != null ? p.modelScale : 1);
+      if (state.group) state.group.scale.setScalar(__ms__);
+      const __mouseRaw__ = state.mouse;
+      if (state.mouse && __ms__ !== 1) state.mouse = { x: state.mouse.x / __ms__, y: state.mouse.y / __ms__ };
+      try {
       const recipe = normalizeRecipe(state.recipe);
       const src  = SEGMENTS.sources[recipe.source.id];
       const primIds = recipe.primitives.map(x => x.id);
@@ -5075,6 +5125,7 @@
           }
         }
       }
+      } finally { state.mouse = __mouseRaw__; }
     }
   });
 })();
@@ -5416,7 +5467,7 @@
       text: 'Howdy!|A8C',
       shape: 2, dotSize: 0.73, ringWidth: 0.36, fontScale: 0.9,
       pushStrength: -0.04, pushRadius: 0.2,
-      bgColor: '#4b4926', fgColor: '#fcff5c', dimColor: '#a4dd7e',
+      bgColor: '#2C5EAD', fgColor: '#C4E2F5', dimColor: '#4BB8FA',
     },
     composer: {
       // Source: parametric-circle (count + radius)
@@ -5427,22 +5478,33 @@
       eff0_strength: 28, eff0_scale: 1.55, eff0_speed: 0.4,
       // Effect 1: rotation-wave (maxRot + cycle + stagger)
       eff1_maxRot: 5, eff1_cycle: 4, eff1_stagger: 0.8,
-      bgColor: '#dedede', lineColor: '#ff5c5c',
+      bgColor: '#e8e8e8', lineColor: '#ff5c5c',
       cursorStrength: -0.8,
+      cursorRadius: 150,
+      cursorSoftness: 0.6,
+      overlayGradientColorB: '#66c4ff',
     },
     glyph: {
       cursorStrength: 2, cursorRadius: 150, cursorSoftness: 0.8,
       useSquare: true,
+      bgColor: '#e8e8e8',
+      overlayGradientColorB: '#66c4ff',
     },
     waves: {
-      rows: 113, spacing: 7, rowSamples: 380, width: 910,
-      amplitude: 18, frequency: 4.3, speed: 0.45, cascade: 1.4, envelope: 1,
-      shapeText: '#', svgScale: 1100, svgBoost: 1.5,
+      rows: 200, spacing: 4, rowSamples: 380, width: 960,
+      amplitude: 4.5, frequency: 4.3, speed: 0.45, cascade: 1.4, envelope: 1,
+      shapeText: '*', svgScale: 1100, svgBoost: 1.5,
+      shapeSoftness: 0.09,
+      cursorBoost: 2,
+      cursorFreqBoost: 0.13,
+      cursorRadius: 130,
+      cursorSoftness: 1,
       overlayGradient: true,
-      overlayGradientColorA: '#ff5c5c',
-      overlayGradientColorB: '#000000',
-      overlayGradientAngle: 45,
-      overlayGradientScale: 1.2,
+      overlayGradientColorA: '#2a90cb',
+      overlayGradientColorB: '#d7bb33',
+      overlayGradientAngle: -129,
+      overlayGradientPosition: 0,
+      overlayGradientScale: 2,
       overlayGradientSoftness: 0.6,
       overlayGradientAmount: 1,
     },
@@ -5457,7 +5519,7 @@
       count: 2200,
       size: 18,
       color: '#ffffff',
-      bgColor: '#ac5353',
+      bgColor: '#000000',
       polarity: -2,         // Toward light
       speed: 14,
       damping: 0.63,
@@ -5469,24 +5531,34 @@
       cursorRadius: 240,
       cursorSoftness: 0.5,
       overlayGradient: true,
-      overlayGradientColorA: '#ff5c5c',
-      overlayGradientColorB: '#ffe066',
+      overlayGradientColorA: '#b9f637',
+      overlayGradientColorB: '#fb5151',
+      overlayGradientScale: 2,
     },
     halftone: {
       text: '#',
       shape: 1,             // Dot
-      cellSize: 14,
-      fillFrac: 137,
+      blurPx: 0,
+      cellSize: 8,
+      cellGap: 0,
+      fillFrac: 155,
       fgColor: '#ffffff',
       fgColor2: '#444444',
       bgColor: '#72b3ff',
       useLibrary: true,
       symbols: 'automattic',
+      warpAmp: 0.01,
+      warpSpeed: 0.11,
+      warpScale: 2.5,
+      thresholdJitter: 0.23,
+      rotJitter: 0.52,
       waveEnabled: true,
       waveAmplitude: 8.5,
       waveFrequency: 0.5,
       waveStagger: 0.4,
-      cursorStrength: 0.52,
+      cursorStrength: 0.2,
+      cursorRadius: 220,
+      cursorSoftness: 0.92,
     },
   };
   ANIMATIONS.forEach(anim => {
@@ -6902,6 +6974,9 @@
     }
 
     function generateLabHtml(){
+      // Keep EFFECTS layers in the bake so per-layer indices stay aligned with
+      // the studio's cascade rule (an EFFECTS layer at index j applies to every
+      // non-effects layer at i > j). The runtime skips them at build/draw time.
       const subjects = recipe.subjects;
       const globalMotionRecipe = recipe.globalMotion || [];
       const globalPixelRecipe  = recipe.globalPixel  || [];
@@ -6972,7 +7047,10 @@
         // running module; rewrite to plain getGlyph for the standalone export.
         const buildSrc = buildHersheyStrokes.toString()
           .replace(/window\.MotionHershey\.getGlyph/g, 'getGlyph')
-          .replace(/if \(!window\.MotionHershey\) return \[\];?\s*/g, '');
+          .replace(/if \(!window\.MotionHershey\) return \[\];?\s*/g, '')
+          // The studio's helper reads recipe.subject.subjectScale; in the
+          // standalone runtime the active layer is exposed as R.
+          .replace(/recipe\.subject\b/g, 'R');
         hersheyBlock = [
           'var HERSHEY_RAW = ' + rawJson + ';',
           'var HERSHEY_GLYPHS = {};',
@@ -7003,7 +7081,11 @@
       const title = ((subjects[0] && subjects[0].content) || 'lab').replace(/[<>&"']/g, '');
 
       // --- Renderer bodies for all (type, style) pairs used across layers ---
-      const usedKeys = Array.from(new Set(subjects.map(s => s.type + '_' + s.style)));
+      // EFFECTS layers have no renderable shape — skip so we don't emit the
+      // `effects_undefined` fallback.
+      const usedKeys = Array.from(new Set(
+        subjects.filter(s => s.type !== 'effects').map(s => s.type + '_' + s.style)
+      ));
       const rendererBodies = usedKeys.map(key => {
         const body = LAB_HTML_RENDERERS[key] || LAB_HTML_RENDERERS.fallback;
         // Rename `function buildScene()` to a key-specific name; rewrite
@@ -7019,7 +7101,17 @@
       }).join(', ') + ' }';
 
       // --- Pixel effects: emit shaders + uniform metadata ---
-      const usedPixelIds = Array.from(new Set(globalPixelRecipe.map(e => e.id)));
+      // Pull ids from EFFECTS-layer pixelEffects (new UI path) AND from the
+      // legacy globalPixel array (v2 snapshots).
+      const pixelIdsFromLayers = [];
+      subjects.forEach(s => {
+        if (s.type === 'effects' && s.pixelEffects){
+          s.pixelEffects.forEach(e => pixelIdsFromLayers.push(e.id));
+        }
+      });
+      const usedPixelIds = Array.from(new Set(
+        pixelIdsFromLayers.concat(globalPixelRecipe.map(e => e.id))
+      ));
       const pixelDefs = usedPixelIds.map(id => {
         const def = LAB_PIXEL_EFFECTS[id];
         if (!def) return null;
@@ -7033,8 +7125,34 @@
       const pixelChainJson = JSON.stringify(globalPixelRecipe);
       const globalMotionJson = JSON.stringify(globalMotionCalls);
 
-      // --- Per-layer effect call list (emit as JSON consumed at runtime) ---
-      const layerEffectsJson = JSON.stringify(layerEffectCalls);
+      // --- Per-layer cumulative motion (mirrors studio cascade rule). For
+      // each shape layer at index i, run: local effects + every preceding
+      // non-hidden EFFECTS layer's effects (in stack order). Effects-type
+      // entries get an empty list (they never render). Effect ids are also
+      // registered here so the runtime has a function for every cascaded id.
+      const layerTotalMotion = subjects.map((s, i) => {
+        if (s.type === 'effects') return [];
+        const out = [];
+        (s.effects || []).forEach(e => { if (registerEffect(e.id)) out.push({ id: e.id, params: e.params }); });
+        for (let j = 0; j < i; j++){
+          const cs = subjects[j];
+          if (!cs || cs.type !== 'effects' || cs.hidden || !cs.effects) continue;
+          cs.effects.forEach(e => { if (registerEffect(e.id)) out.push({ id: e.id, params: e.params }); });
+        }
+        return out;
+      });
+      const layerEffectsJson = JSON.stringify(layerTotalMotion);
+
+      // --- Aggregated pixel chain at bake time (studio rule: EFFECTS-layer
+      // pixelEffects in stack order, skipping hidden, then legacy globalPixel).
+      const aggregatedPixelChain = [];
+      subjects.forEach(s => {
+        if (s.type === 'effects' && !s.hidden && s.pixelEffects){
+          s.pixelEffects.forEach(e => aggregatedPixelChain.push(e));
+        }
+      });
+      globalPixelRecipe.forEach(e => aggregatedPixelChain.push(e));
+      const aggregatedPixelChainJson = JSON.stringify(aggregatedPixelChain);
 
       // --- Assembly ---
       const runtime = `
@@ -7042,7 +7160,7 @@
 var LAYERS = ${layersJson};
 var LAYER_EFFECTS = ${layerEffectsJson};
 var GLOBAL_MOTION = ${globalMotionJson};
-var GLOBAL_PIXEL  = ${pixelChainJson};
+var GLOBAL_PIXEL  = ${aggregatedPixelChainJson};
 var PIXEL_DEFS    = ${pixelDefsJson};
 var LAB_VIEW = 1100;
 
@@ -7063,7 +7181,7 @@ ${Object.entries(effectFnRegistry).map(([id, reg]) => `  map[${JSON.stringify(id
 var canvas = document.getElementById('stage');
 var renderer = new THREE.WebGLRenderer({ canvas: canvas, antialias: true, alpha: false });
 renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
-renderer.setClearColor(LAYERS[0].bgColor, 1);
+renderer.setClearColor((function(){ for (var i = 0; i < LAYERS.length; i++){ if (LAYERS[i].type !== 'effects') return LAYERS[i].bgColor; } return '#ffffff'; })(), 1);
 var scene = new THREE.Scene();
 var camera = new THREE.OrthographicCamera(-LAB_VIEW/2, LAB_VIEW/2, LAB_VIEW/2, -LAB_VIEW/2, -1000, 1000);
 camera.position.z = 10;
@@ -7084,7 +7202,9 @@ var layerStates = LAYERS.map(function(R, idx){
            svgPaths: SVG_PATHS_BY_LAYER[idx] };
 });
 
+var currentLayerIdx = 0;
 function activate(i){
+  currentLayerIdx = i;
   var s = layerStates[i];
   R = s.R;
   group = s.group; lineMat = s.lineMat; fillMat = s.fillMat;
@@ -7122,6 +7242,7 @@ function setupParticleMesh(xyFlat, overrideDotSize){
 
 function writeParticleTransforms(t, layerIdx){
   if (!particleMesh) return;
+  if (layerIdx === undefined) layerIdx = currentLayerIdx;
   var R = layerStates[layerIdx].R;
   var localEffects = LAYER_EFFECTS[layerIdx] || [];
   var n = baseAnchors.length;
@@ -7164,8 +7285,10 @@ ${rendererBodies}
 
 var BUILDERS = ${builderMap};
 
-// Build each layer's scene once.
+// Build each layer's scene once. EFFECTS layers contribute via the cascade
+// in LAYER_EFFECTS and the pixel chain; they have no shape to render.
 for (var i = 0; i < LAYERS.length; i++){
+  if (LAYERS[i].type === 'effects') continue;
   activate(i);
   var fn = BUILDERS[LAYERS[i].type + '_' + LAYERS[i].style];
   if (fn) fn();
@@ -7223,6 +7346,7 @@ function tick(){
   var t = (performance.now() - startTime) / 1000;
   var hasGlobalMotion = GLOBAL_MOTION.length > 0;
   for (var i = 0; i < LAYERS.length; i++){
+    if (LAYERS[i].type === 'effects') continue;
     activate(i);
     var R = LAYERS[i];
     var hasLocal = (LAYER_EFFECTS[i] || []).length > 0;
@@ -7263,7 +7387,7 @@ tick();
         '    font-family: ui-monospace, "SF Mono", Menlo, monospace; }\n' +
         '  .wrap { width: 100vw; height: 100vh; display: grid; place-items: center; }\n' +
         '  .stage-wrap { position: relative; aspect-ratio: 1 / 1;\n' +
-        '    width: min(100vw, 100vh); background: ' + subjects[0].bgColor + '; overflow: hidden; }\n' +
+        '    width: min(100vw, 100vh); background: ' + ((subjects.find(s => s.type !== 'effects') || subjects[0] || { bgColor: '#ffffff' }).bgColor) + '; overflow: hidden; }\n' +
         '  canvas.stage { display: block; width: 100%; height: 100%; }\n' +
         '</style>\n' +
         '</head>\n' +

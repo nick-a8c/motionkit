@@ -27,6 +27,53 @@ Three small but user-visible fixes:
   per-tool `defaultOpenSections` whitelist is only applied for sections the
   user has not yet touched. Resolves the prior behaviour where switching
   Composer → Glyph → Composer reset everything back to defaults.
+- **Lab HTML export — EFFECTS layers carry through.** Previously the
+  exporter built renderers per `subject.type + '_' + subject.style`, which
+  produced an `effects_undefined` fallback that wrote "Unsupported style:
+  undefined" into `document.body` on load. Fixed by keeping EFFECTS layers in
+  the bake (so per-layer indices stay aligned with the studio's cascade rule)
+  but skipping them during renderer-key collection and the build/tick loops.
+  In addition:
+  - `LAYER_EFFECTS[i]` is now the **cumulative** motion list for layer i
+    (local + every preceding non-hidden EFFECTS-layer's effects, in stack
+    order), pre-computed at bake time.
+  - The runtime pixel chain is aggregated at bake time from every non-hidden
+    EFFECTS-layer's `pixelEffects` (in stack order) plus the legacy
+    `recipe.globalPixel` array.
+  - `writeParticleTransforms(0)` calls from build bodies now default
+    `layerIdx` to a new module-level `currentLayerIdx` set by `activate(i)`.
+  - The renderer's clear color picks the first non-effects layer's bgColor
+    (mirrors studio's `firstBg` rule).
+  - Pre-existing bug: `buildHersheyStrokes.toString()` references
+    `recipe.subject.subjectScale`, which doesn't exist in the standalone
+    runtime — added `.replace(/recipe\.subject\b/g, 'R')` to the rewrite
+    chain.
+  - **Still not supported in HTML export**: Solid Fill / Outline mesh
+    deformation. Those renderer bodies use a textured plane (text_fill) or an
+    un-subdivided ShapeGeometry (svg_fill / outline), so per-vertex
+    deformation has nowhere to land. Marching-squares + subdivision + a
+    runtime `writeFillTransforms` would need to be ported in.
+- **Playground "Model scale" control on every tool.** Single slider
+  (0.1×–2×, default 1) on Composer / Glyph / Vinyl / Waves / Dots / Particles
+  / Halftone. Implemented as `state.group.scale.setScalar(p.modelScale ?? 1)`
+  at the top of each update. To keep cursor effects coherent at non-1 scales,
+  each tool's update wraps its body in a snapshot/restore that brings the
+  cursor field into the model's local frame:
+  ```js
+  const __mouseRaw__ = state.mouse;
+  if (state.mouse && __ms__ !== 1) state.mouse = { x: state.mouse.x / __ms__, y: state.mouse.y / __ms__ };
+  try { /* existing update body */ } finally { state.mouse = __mouseRaw__; }
+  ```
+  Dots uses a `Vector2` uniform (`state.material.uniforms.cursorUv.value`)
+  instead of a plain `state.mouse`; snapshot clones, restore uses `.copy()`,
+  and the scaling formula is `(uv - 0.5) / ms + 0.5` since the uniform is in
+  centred world-UV space. Vinyl has no cursor effect so the snapshot was
+  skipped.
+- **Defaults refresh** for Composer / Glyph / Waves / Dots / Particles /
+  Halftone in `INITIAL_DEFAULTS` (line ~5412). Newly-mapped keys worth
+  noting: Waves uses `shapeSoftness` / `cursorBoost` / `cursorFreqBoost` /
+  `overlayGradientPosition`; Halftone uses `blurPx` / `cellGap` / `warpAmp` /
+  `warpSpeed` / `warpScale` / `thresholdJitter` / `rotJitter`.
 
 Earlier backups in `backups/`. The 2026-05-18 backup predates the Lab vector
 fill / outline mesh, the deformed-mesh SVG export, the six new Lab effects,
