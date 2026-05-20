@@ -1035,6 +1035,9 @@
       { key: 'effScalePulse', label: 'Scale pulse',        type: 'checkbox', value: false, hidden: true },
       { key: 'effWaveFlow',   label: 'Wave flow',          type: 'checkbox', value: false, hidden: true },
       { key: 'effRepulsion',  label: 'Repulsion',          type: 'checkbox', value: false, hidden: true },
+      { key: 'effOrbit',      label: 'Orbit',              type: 'checkbox', value: false, hidden: true },
+      { key: 'effGlitch',     label: 'Glitch',             type: 'checkbox', value: false, hidden: true },
+      { key: 'effPulse',      label: 'Pulse',              type: 'checkbox', value: false, hidden: true },
     ],
 
     attractor(state, mx, my){
@@ -1163,6 +1166,9 @@
         if (p.effScalePulse) add('scale-pulse');
         if (p.effWaveFlow)   add('wave-flow');
         if (p.effRepulsion)  add('repulsion');
+        if (p.effOrbit)      add('orbit');
+        if (p.effGlitch)     add('glitch');
+        if (p.effPulse)      add('pulse');
         return out;
       }
       const composerEffects = effectsList();
@@ -2115,6 +2121,13 @@
       { key: 'svgOutlineThickness', label: 'SVG outline thickness',    min: 1, max: 60, step: 1, value: 10 },
       { key: 'svgScale',          label: 'Shape scale',     min: 100, max: 1200, step: 10,   value: 600 },
       { key: 'svgBoost',          label: 'Amplitude boost', min: -2, max: 4,   step: 0.05, value: 2.0 },
+      { section: 'Pulse' },
+      { key: 'pulseEnabled',  label: 'Enable pulse',  type: 'checkbox', value: false },
+      { key: 'pulseAmplitude',label: 'Amplitude',     min: 0,     max: 200, step: 1,    value: 60 },
+      { key: 'pulsePeriod',   label: 'Period (s)',    min: 0.5,   max: 8,   step: 0.05, value: 2.4 },
+      { key: 'pulseWidth',    label: 'Band width',    min: 20,    max: 400, step: 1,    value: 120 },
+      { key: 'pulseCenterX',  label: 'Centre X',      min: -500,  max: 500, step: 5,    value: 0 },
+      { key: 'pulseCenterY',  label: 'Centre Y',      min: -500,  max: 500, step: 5,    value: 0 },
       { section: 'Cursor' },
       { key: 'cursorBoost',         label: 'Amplitude boost',    min: 0,  max: 4,   step: 0.05, value: 2.0 },
       { key: 'cursorFreqBoost',     label: 'Frequency boost',    min: 0,  max: 1,   step: 0.01, value: 0 },
@@ -2288,6 +2301,15 @@
       const lineR = state.lineCol.r, lineG = state.lineCol.g, lineB = state.lineCol.b;
       const bgR   = state.bgCol.r,   bgG   = state.bgCol.g,   bgB   = state.bgCol.b;
 
+      // Pulse — radial Gaussian ring sweeping outward from a centre.
+      const pulseOn   = !!p.pulseEnabled;
+      const pulseAmp  = +p.pulseAmplitude || 0;
+      const pulsePer  = Math.max(0.1, +p.pulsePeriod || 1);
+      const pulseW    = Math.max(1, +p.pulseWidth || 100);
+      const pulseCX   = +p.pulseCenterX || 0;
+      const pulseCY   = +p.pulseCenterY || 0;
+      const pulseRing = ((t / pulsePer) % 1) * 1100;
+
       for (let r = 0; r < rows; r++){
         const rowY = yCenter + r * p.spacing;
         const phase = t * p.speed * Math.PI * 2 + r * p.cascade;
@@ -2335,10 +2357,23 @@
           let freq = p.frequency;
           if (cursorFreqB !== 0) freq *= Math.max(0, 1 + cursorFreqB * prox);
 
-          const y = rowY + Math.sin(u * Math.PI * 2 * freq + phase) * amp;
+          let y = rowY + Math.sin(u * Math.PI * 2 * freq + phase) * amp;
 
-          pos[i * 3]     = x;
-          pos[i * 3 + 1] = y;
+          // Pulse — radial displacement away from the centre when the ring sweeps over the anchor.
+          let outX = x, outY = y;
+          if (pulseOn && pulseAmp > 0){
+            const dxp = x - pulseCX;
+            const dyp = y - pulseCY;
+            const rp  = Math.sqrt(dxp * dxp + dyp * dyp) || 0.001;
+            const dist = rp - pulseRing;
+            const env  = Math.exp(-(dist * dist) / (pulseW * pulseW));
+            const kp   = env * pulseAmp / rp;
+            outX = x + dxp * kp;
+            outY = y + dyp * kp;
+          }
+
+          pos[i * 3]     = outX;
+          pos[i * 3 + 1] = outY;
           pos[i * 3 + 2] = 0;
 
           // Halo line vertex color: lerp bg ↔ line by cursor proximity so the
@@ -2573,6 +2608,12 @@
     uniform vec3      bgRgb;
     uniform vec3      fgRgb;
     uniform vec3      dimRgb;          // background dim level for "off" cells
+    uniform float     uPulseAmp;       // 0 = disabled
+    uniform float     uPulsePeriod;
+    uniform float     uPulseWidth;
+    uniform vec2      uPulseCenter;    // world units
+    uniform float     uPulseT;         // time (seconds)
+    uniform vec2      uPulseView;      // world view size (w, h)
 
     // Cheap hash for per-cell stagger and dim variation.
     float hash21(vec2 p){
@@ -2599,6 +2640,23 @@
       prox = clamp(prox, 0.0, 1.0);
       float pushK = prox * pushStrength;
       vec2 displaced = cellCenter + dir * pushK * 0.5;
+
+      // Pulse — radial Gaussian ring displaces the drawn dot outward from
+      // a world-space centre. Convert uv → world, run formula, convert back.
+      if (uPulseAmp > 0.0){
+        vec2 worldPos = (cellCenter - 0.5) * uPulseView;
+        vec2 dW = worldPos - uPulseCenter;
+        float rW = length(dW);
+        if (rW < 1e-3) rW = 1e-3;
+        float ringR = fract(uPulseT / max(0.1, uPulsePeriod)) * 1100.0;
+        float dist = rW - ringR;
+        float w = max(1.0, uPulseWidth);
+        float env = exp(-(dist * dist) / (w * w));
+        float k = env * uPulseAmp / rW;
+        vec2 worldDisp = dW * k;
+        // World → uv offset.
+        displaced += worldDisp / uPulseView;
+      }
 
       // Sample masks at the (non-displaced) cell center so the letter stays put.
       float mA = texture2D(maskA, cellCenter).a;
@@ -2691,6 +2749,13 @@
       { key: 'pushStrength', label: 'Strength (+ push / − magnet)', min: -0.1, max: 0.1,  step: 0.005, value: 0.05 },
       { key: 'pushRadius',   label: 'Radius',                       min: 0.05, max: 0.6,  step: 0.01,  value: 0.2 },
       { key: 'pushSoftness', label: 'Softness',                     min: 0,    max: 1,    step: 0.01,  value: 0.5 },
+      { section: 'Pulse' },
+      { key: 'pulseEnabled',  label: 'Enable pulse',  type: 'checkbox', value: false },
+      { key: 'pulseAmplitude',label: 'Amplitude',     min: 0,     max: 200, step: 1,    value: 60 },
+      { key: 'pulsePeriod',   label: 'Period (s)',    min: 0.5,   max: 8,   step: 0.05, value: 2.4 },
+      { key: 'pulseWidth',    label: 'Band width',    min: 20,    max: 400, step: 1,    value: 120 },
+      { key: 'pulseCenterX',  label: 'Centre X',      min: -500,  max: 500, step: 5,    value: 0 },
+      { key: 'pulseCenterY',  label: 'Centre Y',      min: -500,  max: 500, step: 5,    value: 0 },
       { section: 'Style' },
       { key: 'bgColor', label: 'Background', type: 'color', value: '#dedede' },
       { key: 'fgColor', label: 'Foreground', type: 'color', value: '#ff5c5c' },
@@ -2731,6 +2796,12 @@
         bgRgb:         { value: new THREE.Vector3(colA.r, colA.g, colA.b) },
         fgRgb:         { value: new THREE.Vector3(colB.r, colB.g, colB.b) },
         dimRgb:        { value: new THREE.Vector3(colD.r, colD.g, colD.b) },
+        uPulseAmp:     { value: 0 },
+        uPulsePeriod:  { value: 2.4 },
+        uPulseWidth:   { value: 120 },
+        uPulseCenter:  { value: new THREE.Vector2(0, 0) },
+        uPulseT:       { value: 0 },
+        uPulseView:    { value: new THREE.Vector2(1100, 1100) },
       };
       const material = new THREE.ShaderMaterial({
         vertexShader: VERT,
@@ -2885,6 +2956,17 @@
       u.pushStrength.value = p.pushStrength;
       u.pushRadius.value   = p.pushRadius;
       u.pushSoftness.value = (p.pushSoftness == null) ? 0.5 : p.pushSoftness;
+
+      // Pulse uniforms — Amplitude zeroed when disabled so the shader skips work.
+      u.uPulseAmp.value    = p.pulseEnabled ? (+p.pulseAmplitude || 0) : 0;
+      u.uPulsePeriod.value = Math.max(0.1, +p.pulsePeriod || 2.4);
+      u.uPulseWidth.value  = Math.max(1, +p.pulseWidth || 120);
+      u.uPulseCenter.value.set(+p.pulseCenterX || 0, +p.pulseCenterY || 0);
+      u.uPulseT.value      = t;
+      {
+        const __pv = window.MotionPlaygroundView || { w: 1100, h: 1100 };
+        u.uPulseView.value.set(__pv.w || 1100, __pv.h || 1100);
+      }
 
       // Cached style colors — only re-parse when the hex changes.
       if (p.bgColor !== state.cachedBg){
@@ -3237,6 +3319,14 @@
       { key: 'cursorStrength', label: 'Strength (− push / + pull)', min: -0.3, max: 0.3, step: 0.01, value: 0 },
       { key: 'cursorRadius',   label: 'Radius', min: 30, max: 600, step: 1, value: 180 },
       { key: 'cursorSoftness', label: 'Softness', min: 0, max: 1, step: 0.01, value: 0.5 },
+
+      { section: 'Pulse' },
+      { key: 'pulseEnabled',  label: 'Enable pulse',  type: 'checkbox', value: false },
+      { key: 'pulseAmplitude',label: 'Amplitude',     min: 0,     max: 200, step: 1,    value: 60 },
+      { key: 'pulsePeriod',   label: 'Period (s)',    min: 0.5,   max: 8,   step: 0.05, value: 2.4 },
+      { key: 'pulseWidth',    label: 'Band width',    min: 20,    max: 400, step: 1,    value: 120 },
+      { key: 'pulseCenterX',  label: 'Centre X',      min: -500,  max: 500, step: 5,    value: 0 },
+      { key: 'pulseCenterY',  label: 'Centre Y',      min: -500,  max: 500, step: 5,    value: 0 },
     ],
 
     attractor(state, mx, my){
@@ -3554,6 +3644,16 @@
       // the field) so the dirty-check stays cheap.
       const cursorIndirectActive = haveMouse && cursorMode === 1;
 
+      // Pulse — radial Gaussian ring sweeping outward from a centre.
+      const pulseOn   = !!p.pulseEnabled;
+      const pulseAmp  = +p.pulseAmplitude || 0;
+      const pulsePer  = Math.max(0.1, +p.pulsePeriod || 1);
+      const pulseW    = Math.max(1, +p.pulseWidth || 100);
+      const pulseCX   = +p.pulseCenterX || 0;
+      const pulseCY   = +p.pulseCenterY || 0;
+      const pulseRing = ((t / pulsePer) % 1) * 1100;
+      const pulseActive = pulseOn && pulseAmp > 0;
+
       const count = state.currentCount;
       const dummy = state.dummy;
       const size = +p.size || 1;
@@ -3616,6 +3716,18 @@
         // Integrate.
         state.px[i] += state.vx[i];
         state.py[i] += state.vy[i];
+
+        // Pulse — direct positional displacement after integration.
+        if (pulseActive){
+          const dxp = state.px[i] - pulseCX;
+          const dyp = state.py[i] - pulseCY;
+          const rp  = Math.sqrt(dxp * dxp + dyp * dyp) || 0.001;
+          const dist = rp - pulseRing;
+          const env  = Math.exp(-(dist * dist) / (pulseW * pulseW));
+          const kp   = env * pulseAmp / rp;
+          state.px[i] += dxp * kp;
+          state.py[i] += dyp * kp;
+        }
 
         // Bounce at canvas edges (with light energy loss).
         if (state.px[i] >  VX){ state.px[i] =  VX; state.vx[i] *= -0.4; }
@@ -3998,6 +4110,14 @@
         { value: 2, label: 'Both' },
       ] },
 
+      { section: 'Pulse' },
+      { key: 'pulseEnabled',  label: 'Enable pulse',  type: 'checkbox', value: false },
+      { key: 'pulseAmplitude',label: 'Amplitude',     min: 0,     max: 200, step: 1,    value: 60 },
+      { key: 'pulsePeriod',   label: 'Period (s)',    min: 0.5,   max: 8,   step: 0.05, value: 2.4 },
+      { key: 'pulseWidth',    label: 'Band width',    min: 20,    max: 400, step: 1,    value: 120 },
+      { key: 'pulseCenterX',  label: 'Centre X',      min: -500,  max: 500, step: 5,    value: 0 },
+      { key: 'pulseCenterY',  label: 'Centre Y',      min: -500,  max: 500, step: 5,    value: 0 },
+
       { section: 'Cursor' },
       { key: 'cursorStrength', label: 'Strength (− push / + pull)', min: -1, max: 1, step: 0.01, value: 0 },
       { key: 'cursorRadius',   label: 'Radius',  min: 30, max: 600, step: 1,    value: 220 },
@@ -4291,6 +4411,16 @@
       const mX = haveMouse ? state.mouse.x : 0;
       const mY = haveMouse ? state.mouse.y : 0;
 
+      // Pulse — radial Gaussian ring sweeping outward from a centre.
+      const pulseOn   = !!p.pulseEnabled;
+      const pulseAmp  = +p.pulseAmplitude || 0;
+      const pulsePer  = Math.max(0.1, +p.pulsePeriod || 1);
+      const pulseW    = Math.max(1, +p.pulseWidth || 100);
+      const pulseCX   = +p.pulseCenterX || 0;
+      const pulseCY   = +p.pulseCenterY || 0;
+      const pulseRing = ((t / pulsePer) % 1) * 1100;
+      const pulseActive = pulseOn && pulseAmp > 0;
+
       // Randomness.
       const tJitter = +p.thresholdJitter || 0;
       const skip = +p.skipFraction || 0;
@@ -4382,7 +4512,19 @@
               dyc = ddy * k;
             }
           }
-          dummy.position.set(wx + dxw + dxc, wy + dyw + dyc, 0);
+          // Pulse — radial displacement away from centre when ring sweeps the cell.
+          let dxp = 0, dyp = 0;
+          if (pulseActive){
+            const pdx = wx - pulseCX;
+            const pdy = wy - pulseCY;
+            const rp  = Math.sqrt(pdx * pdx + pdy * pdy) || 0.001;
+            const distR = rp - pulseRing;
+            const env  = Math.exp(-(distR * distR) / (pulseW * pulseW));
+            const kp   = env * pulseAmp / rp;
+            dxp = pdx * kp;
+            dyp = pdy * kp;
+          }
+          dummy.position.set(wx + dxw + dxc + dxp, wy + dyw + dyc + dyp, 0);
           // Library mode uses symSize (cellGap applied); base mode keeps the
           // old cell-coverage rule so behavior is unchanged when library is off.
           const sz = useLib ? symSize : cellSize * fillFrac;
@@ -6299,6 +6441,9 @@
       { key: 'effScalePulse', label: 'Scale pulse' },
       { key: 'effWaveFlow',   label: 'Wave flow' },
       { key: 'effRepulsion',  label: 'Repulsion' },
+      { key: 'effOrbit',      label: 'Orbit' },
+      { key: 'effGlitch',     label: 'Glitch' },
+      { key: 'effPulse',      label: 'Pulse' },
     ]);
   }
 
