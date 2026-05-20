@@ -2820,14 +2820,17 @@
         const frames = parseFrames(p.text);
         const modelScale = (p.modelScale != null ? p.modelScale : 1);
         const fontScale = p.fontScale * modelScale;
+        const viewAspect = (window.MotionPlaygroundView && window.MotionPlaygroundView.aspect) || 1;
         const seqChanged = frames.join('|') !== state.frames.join('|');
         const sizeChanged = maskRes !== state.maskRes;
         const fontChanged = fontScale !== state.fontScale;
+        const aspectChanged = viewAspect !== state.cachedAspect;
         const exitingSvg = state.lastSvgCanvas != null;
-        if (seqChanged || sizeChanged || fontChanged || exitingSvg){
+        if (seqChanged || sizeChanged || fontChanged || aspectChanged || exitingSvg){
           state.frames = frames;
           state.maskRes = maskRes;
           state.fontScale = fontScale;
+          state.cachedAspect = viewAspect;
           if (seqChanged || exitingSvg){
             state.currentIdx = 0;
             state.nextIdx = Math.min(1, frames.length - 1);
@@ -2977,17 +2980,24 @@
     const { frames, currentIdx, nextIdx, maskRes, fontScale, ping, pong } = state;
     const a = frames[currentIdx] || ' ';
     const b = frames[nextIdx]    || ' ';
-    drawInto(ping.canvas, a, maskRes, fontScale);
-    drawInto(pong.canvas, b, maskRes, fontScale);
+    const aspect = (window.MotionPlaygroundView && window.MotionPlaygroundView.aspect) || 1;
+    drawInto(ping.canvas, a, maskRes, fontScale, aspect);
+    drawInto(pong.canvas, b, maskRes, fontScale, aspect);
     ping.texture.needsUpdate = true;
     pong.texture.needsUpdate = true;
   }
-  function drawInto(cv, ch, size, fontScale){
-    cv.width = size; cv.height = size;
+  function drawInto(cv, ch, size, fontScale, aspect){
+    // Match the canvas's pixel aspect to the live frustum so when the
+    // textured plane is stretched 16:9 the glyphs aren't stretched too.
+    // Text is drawn into a centred square; the wider flanks stay bg.
+    const W = Math.round(size * Math.max(1, aspect || 1));
+    const H = Math.round(size * Math.max(1, 1 / (aspect || 1)));
+    cv.width = W; cv.height = H;
     const tmp = renderTextCanvas(size, ch, fontScale);
     const ctx = cv.getContext('2d');
-    ctx.clearRect(0, 0, size, size);
-    ctx.drawImage(tmp, 0, 0);
+    ctx.clearRect(0, 0, W, H);
+    // Centre the square text canvas in the wider/taller output canvas.
+    ctx.drawImage(tmp, (W - size) / 2, (H - size) / 2);
   }
 })();
 
@@ -3346,25 +3356,30 @@
     _layoutParticles(p, state){
       const count = Math.min(MAX_PARTICLES, Math.max(1, Math.round(p.count)));
       const layout = Math.round(p.layout);
-      const V = VIEW * 0.45;     // keep particles inside the visible square
+      // Honor the live frustum so particles fill the canvas on 16:9 (or any
+      // aspect). Fall back to the legacy square if the view hasn't published.
+      const view = window.MotionPlaygroundView;
+      const VX = view ? view.halfW * 0.9 : VIEW * 0.45;
+      const VY = view ? view.halfH * 0.9 : VIEW * 0.45;
       if (layout === 0){
-        const cols = Math.max(1, Math.round(Math.sqrt(count)));
-        const rows = Math.ceil(count / cols);
-        const stepX = (2 * V) / Math.max(1, cols - 1);
-        const stepY = (2 * V) / Math.max(1, rows - 1);
+        // Grid columns/rows track the canvas aspect so cells stay roughly square.
+        const aspect = (VX / VY) || 1;
+        let cols = Math.max(1, Math.round(Math.sqrt(count * aspect)));
+        let rows = Math.max(1, Math.ceil(count / cols));
+        const stepX = (2 * VX) / Math.max(1, cols - 1);
+        const stepY = (2 * VY) / Math.max(1, rows - 1);
         for (let i = 0; i < count; i++){
           const cx = i % cols, cy = Math.floor(i / cols);
-          state.px[i] = -V + cx * stepX;
-          state.py[i] =  V - cy * stepY;
+          state.px[i] = -VX + cx * stepX;
+          state.py[i] =  VY - cy * stepY;
           state.vx[i] = 0; state.vy[i] = 0;
-          // Random initial rotation + small angular velocity for organic tumble.
           state.pr[i]  = Math.random() * Math.PI * 2;
           state.prv[i] = (Math.random() - 0.5) * 0.04;
         }
       } else {
         for (let i = 0; i < count; i++){
-          state.px[i] = (Math.random() * 2 - 1) * V;
-          state.py[i] = (Math.random() * 2 - 1) * V;
+          state.px[i] = (Math.random() * 2 - 1) * VX;
+          state.py[i] = (Math.random() * 2 - 1) * VY;
           state.vx[i] = 0; state.vy[i] = 0;
           state.pr[i]  = Math.random() * Math.PI * 2;
           state.prv[i] = (Math.random() - 0.5) * 0.04;
@@ -3418,11 +3433,13 @@
         state.cachedFill  = wantFill;
       }
 
-      // Re-layout on count/layout change.
+      // Re-layout on count/layout/aspect change.
       const wantCount = Math.min(MAX_PARTICLES, Math.max(1, Math.round(p.count)));
       const wantLayout = Math.round(p.layout);
-      if (state.currentCount !== wantCount || state.cachedLayout !== wantLayout){
+      const wantAspect = (window.MotionPlaygroundView && window.MotionPlaygroundView.aspect) || 1;
+      if (state.currentCount !== wantCount || state.cachedLayout !== wantLayout || state.cachedAspect !== wantAspect){
         state.cachedLayout = wantLayout;
+        state.cachedAspect = wantAspect;
         this._layoutParticles({ count: wantCount, layout: wantLayout }, state);
       }
 
@@ -3448,8 +3465,13 @@
       const jitter = +p.jitter || 0;
       const repulsion = +p.repulsion || 0;
       const repRadius = Math.max(1, +p.repulsionRadius || 18);
-      const V = VIEW * 0.5;
-      const VInv = 1 / VIEW;
+      // Honor the live frustum for bounce-clamp + field sampling so particles
+      // fill 16:9 (or any aspect) instead of being trapped in the legacy square.
+      const view = window.MotionPlaygroundView;
+      const VX = view ? view.halfW : VIEW * 0.5;
+      const VY = view ? view.halfH : VIEW * 0.5;
+      const VXInv = 1 / (2 * VX);
+      const VYInv = 1 / (2 * VY);
 
       // ---- Pairwise particle repulsion (spatial-hash, near-neighbors only) ----
       // O(n*k) with k=avg neighbors-in-cell. Cell size = repulsion radius so each
@@ -3522,8 +3544,8 @@
       const size = +p.size || 1;
       for (let i = 0; i < count; i++){
         // World → field normalized [0..1]. World y up → field y down.
-        const fx = (state.px[i] + V) * VInv;
-        const fy = 1 - (state.py[i] + V) * VInv;
+        const fx = (state.px[i] + VX) * VXInv;
+        const fy = 1 - (state.py[i] + VY) * VYInv;
         let { gx, gy } = data ? gradientAt(data, fx, fy) : { gx: 0, gy: 0 };
 
         // Indirect cursor: add a radial gradient analytic to gx/gy.
@@ -3581,10 +3603,10 @@
         state.py[i] += state.vy[i];
 
         // Bounce at canvas edges (with light energy loss).
-        if (state.px[i] >  V){ state.px[i] =  V; state.vx[i] *= -0.4; }
-        if (state.px[i] < -V){ state.px[i] = -V; state.vx[i] *= -0.4; }
-        if (state.py[i] >  V){ state.py[i] =  V; state.vy[i] *= -0.4; }
-        if (state.py[i] < -V){ state.py[i] = -V; state.vy[i] *= -0.4; }
+        if (state.px[i] >  VX){ state.px[i] =  VX; state.vx[i] *= -0.4; }
+        if (state.px[i] < -VX){ state.px[i] = -VX; state.vx[i] *= -0.4; }
+        if (state.py[i] >  VY){ state.py[i] =  VY; state.vy[i] *= -0.4; }
+        if (state.py[i] < -VY){ state.py[i] = -VY; state.vy[i] *= -0.4; }
 
         // Advance rotation (per-particle angular velocity).
         state.pr[i] += state.prv[i];
