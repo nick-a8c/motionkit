@@ -102,6 +102,14 @@
   .lab-form-card::-webkit-scrollbar { width: 6px; }
   .lab-form-card::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
   .lab-form-card::-webkit-scrollbar-track { background: transparent; }
+  .lab-font-wrap { position: relative; display: inline-block; }
+  /* Float the info badge just left of the native select chevron. */
+  .lab-font-badge { position: absolute; right: 26px; top: 50%;
+    transform: translateY(-50%); width: 15px; height: 15px; border-radius: 50%;
+    background: var(--border-strong, #b0b0b0); color: #fff; font-size: 10px;
+    font-style: italic; font-weight: 700; line-height: 15px; text-align: center;
+    font-family: Georgia, "Times New Roman", serif; cursor: help;
+    pointer-events: auto; user-select: none; }
   .lab-transport { display: flex; gap: 6px; margin: 10px 0 16px; }
   .lab-transport .panel-button { flex: 1; padding: 6px 8px; font-size: 12px; }
   .lab-checkbox-row { display: flex; align-items: center; gap: 8px;
@@ -7298,6 +7306,9 @@
     // Curated Google Fonts available in the Subject font dropdown.
     // Stacks fall back to system fonts if a remote font hasn't finished loading.
     const LAB_FONTS = [
+      { label: 'Source Serif 4', stack: '"Source Serif 4", Georgia, serif' },
+      { label: 'Knockout',       stack: '"Knockout", "Knockout 49 Liteweight", Impact, sans-serif',
+        internal: true, internalNote: 'This font is for INTERNAL USE ONLY!' },
       { label: 'System mono',    stack: 'ui-monospace, "SF Mono", Menlo, monospace' },
       { label: 'Inter',          stack: '"Inter", system-ui, sans-serif' },
       { label: 'Roboto',         stack: '"Roboto", system-ui, sans-serif' },
@@ -7320,7 +7331,7 @@
       const link = document.createElement('link');
       link.id = 'lab-google-fonts';
       link.rel = 'stylesheet';
-      link.href = 'https://fonts.googleapis.com/css2?family=Inter:wght@700;900&family=Roboto:wght@700;900&family=Poppins:wght@700;900&family=Montserrat:wght@700;900&family=Bebas+Neue&family=Anton&family=Oswald:wght@700&family=Archivo+Black&family=Playfair+Display:wght@700;900&family=Lora:wght@700&family=DM+Serif+Display&family=Space+Mono:wght@700&family=Fira+Code:wght@700&family=IBM+Plex+Sans:wght@700&family=Caveat:wght@700&display=swap';
+      link.href = 'https://fonts.googleapis.com/css2?family=Source+Serif+4:wght@400;600;700;900&family=Inter:wght@700;900&family=Roboto:wght@700;900&family=Poppins:wght@700;900&family=Montserrat:wght@700;900&family=Bebas+Neue&family=Anton&family=Oswald:wght@700&family=Archivo+Black&family=Playfair+Display:wght@700;900&family=Lora:wght@700&family=DM+Serif+Display&family=Space+Mono:wght@700&family=Fira+Code:wght@700&family=IBM+Plex+Sans:wght@700&family=Caveat:wght@700&display=swap';
       document.head.appendChild(link);
     })();
     // Per-layer state — index matches recipe.subjects. Each entry owns its
@@ -8942,6 +8953,10 @@ function renderHalftone(data){
       });
 
       fontRow = makeRow('Font', body => {
+        // Relative wrapper so the "internal use" info badge can float over the
+        // select (between the label text and the native chevron).
+        const wrap = document.createElement('span');
+        wrap.className = 'lab-font-wrap';
         const sel = document.createElement('select');
         sel.className = 'lab-font-select';
         LAB_FONTS.forEach(f => {
@@ -8951,11 +8966,39 @@ function renderHalftone(data){
           if (f.stack === recipe.subject.fontFamily) o.selected = true;
           sel.appendChild(o);
         });
+        // Info badge — shown only when the selected font is flagged internal.
+        const badge = document.createElement('span');
+        badge.className = 'lab-font-badge';
+        badge.textContent = 'i';
+        const syncBadge = () => {
+          const f = LAB_FONTS.find(ff => ff.stack === sel.value);
+          if (f && f.internal){
+            badge.style.display = '';
+            badge.title = f.internalNote || 'This font is for INTERNAL USE ONLY!';
+          } else {
+            badge.style.display = 'none';
+          }
+        };
         sel.addEventListener('change', () => {
           recipe.subject.fontFamily = sel.value;
+          syncBadge();
           rerender();
+          // Web-font load race: the first rerender measures glyphs before the
+          // (Google / local) font finishes loading, so the canvas falls back to
+          // the system face until you reselect. Re-render once the actual font
+          // is ready. primary family = first quoted token in the stack.
+          const m = sel.value.match(/"([^"]+)"/);
+          const fam = m ? m[1] : sel.value.split(',')[0].trim();
+          if (document.fonts && document.fonts.load){
+            document.fonts.load('700 100px "' + fam + '"')
+              .then(() => rerender())
+              .catch(() => {});
+          }
         });
-        body.appendChild(sel);
+        syncBadge();
+        wrap.appendChild(sel);
+        wrap.appendChild(badge);
+        body.appendChild(wrap);
       });
 
       // SVG upload row — visible only when type === 'svg'.
