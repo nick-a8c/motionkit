@@ -6563,9 +6563,9 @@
       // Then every cell instances it via <use> with a per-cell translate +
       // non-uniform scale to fit.
       function traceLetter(ch){
-        const PAD = 24;
-        const TFS = 240;                       // trace font size (px)
-        const RW = 360, RH = 360;              // raster canvas — big enough to fit any single glyph + pad
+        const PAD = 64;
+        const TFS = 720;                       // trace font size (px) — higher = smoother contour samples
+        const RW = 1024, RH = 1024;            // raster canvas at 1k for ~3x finer steps than the prior 360
         const rc = document.createElement('canvas');
         rc.width = RW; rc.height = RH;
         const rctx = rc.getContext('2d');
@@ -6654,15 +6654,29 @@
         }
         const bw = Math.max(1, maxX - minX), bh = Math.max(1, maxY - minY);
         const cx = (minX + maxX) / 2, cy = (minY + maxY) / 2;
-        // Shift so the glyph bbox is centred at (0,0). That way the SVG
-        // <g transform="translate(cellCx cellCy) scale(sx sy)"> wrap below
-        // places the glyph centre exactly at the cell centre after stretch.
+        // Smooth each closed polyline contour into a chain of quadratic
+        // Béziers passing through segment midpoints with original vertices
+        // as control points. Eliminates the marching-squares stair-step.
+        // Also shift each vertex so the glyph bbox is centred at (0,0).
         let d = '';
         for (const c of contours){
-          d += 'M';
-          for (let i = 0; i < c.length; i += 2){
-            const px = c[i] - cx, py = c[i + 1] - cy;
-            d += (i === 0 ? '' : 'L') + fmt(px) + ' ' + fmt(py) + ' ';
+          const N = c.length / 2;
+          if (N < 3) continue;
+          // Pre-compute centred verts + midpoints between consecutive pairs.
+          const mids = new Array(N);
+          for (let i = 0; i < N; i++){
+            const ni = (i + 1) % N;
+            mids[i] = [
+              ((c[i*2] + c[ni*2]) / 2) - cx,
+              ((c[i*2+1] + c[ni*2+1]) / 2) - cy,
+            ];
+          }
+          d += 'M' + fmt(mids[0][0]) + ' ' + fmt(mids[0][1]) + ' ';
+          for (let i = 0; i < N; i++){
+            const vx = c[((i + 1) % N) * 2] - cx;
+            const vy = c[((i + 1) % N) * 2 + 1] - cy;
+            const m = mids[(i + 1) % N];
+            d += 'Q' + fmt(vx) + ' ' + fmt(vy) + ' ' + fmt(m[0]) + ' ' + fmt(m[1]) + ' ';
           }
           d += 'Z ';
         }
