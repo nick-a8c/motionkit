@@ -6417,6 +6417,10 @@
       // some (Anton, Roboto Condensed). Range in cell-height units; negative
       // pushes glyphs upward, positive pushes them downward.
       { key: 'vertOffset', label: 'Vertical offset', min: -0.5, max: 0.5, step: 0.01, value: 0 },
+      // Per-character size multiplier on top of the auto-fit-to-cell math.
+      // 1.0 = the existing behaviour (letter stretched to fill the cell).
+      // < 1 shrinks the letter inside its cell; > 1 lets it overflow.
+      { key: 'charScale',  label: 'Character size',  min: 0.2, max: 2.0, step: 0.01, value: 1 },
       { section: 'Style' },
       { key: 'bgColor',    label: 'Background',     type: 'color', value: '#000000' },
       { key: 'ink',        label: 'Ink (light bg)', type: 'color', value: '#000000' },
@@ -6569,8 +6573,9 @@
           const fs = 200;
           ctx.font = fontWeight + ' ' + fs + 'px ' + fontFamily;
           const mw = ctx.measureText(ch).width || fs*0.5;
-          const sx2 = (w2 - pad*2) / mw;
-          const sy2 = (h - pad*2) / (fs * 0.78);
+          const cScale = (p.charScale != null ? p.charScale : 1);
+          const sx2 = (w2 - pad*2) / mw * cScale;
+          const sy2 = (h - pad*2) / (fs * 0.78) * cScale;
           ctx.scale(sx2, sy2);
           const hex = P[colorIdx].replace('#','');
           const br = (parseInt(hex.slice(0,2),16) + parseInt(hex.slice(2,4),16) + parseInt(hex.slice(4,6),16))/3;
@@ -6840,8 +6845,9 @@
           // is real geometry, the stretch is identical in any SVG viewer.
           const pad = 0.02 * Math.min(w2, h);
           const tInfo = traced[ch];
-          const sx2 = (w2 - pad*2) / tInfo.bbox.w;
-          const sy2 = (h - pad*2) / tInfo.bbox.h;
+          const cScale = (p && p.charScale != null) ? p.charScale : 1;
+          const sx2 = (w2 - pad*2) / tInfo.bbox.w * cScale;
+          const sy2 = (h - pad*2) / tInfo.bbox.h * cScale;
           // Mirror the canvas's vertical offset (h * p.vertOffset) so the
           // exported SVG matches what you see on screen.
           const cxp = x + w2*0.5, cyp = y + h*0.5 + h*((p && p.vertOffset) || 0);
