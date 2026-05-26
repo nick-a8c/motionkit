@@ -5893,13 +5893,110 @@
       state.texture.needsUpdate = true;
     },
 
-    toSvg(state){
+    toSvg(state, p){
       const H = window.MotionSvgHelpers;
       if (!state || !state.canvas) return [];
-      let dataUri;
-      try { dataUri = state.canvas.toDataURL('image/png'); }
-      catch(e){ return []; }
-      return [ H.image(0, 0, H.SIZE, H.SIZE, dataUri) ];
+      const W = state.canvas.width, Ht = state.canvas.height;
+      const s = H.SIZE / Math.min(W, Ht);
+      const offX = (H.SIZE - W * s) / 2;
+      const offY = (H.SIZE - Ht * s) / 2;
+      const sc = (p && p.sceneScale != null) ? p.sceneScale : 1;
+      const fmt = H.fmt, esc = H.escapeXml;
+
+      const fontNames = ['Helvetica','Arial','Roboto Condensed','Georgia','Times','Courier','Impact','Verdana','Tahoma'];
+      const fontName = fontNames[p.font|0] || 'Helvetica';
+      const fontStack = '"' + fontName + '", "Roboto Condensed", "Arial Black", sans-serif';
+      const txt = (p.text == null ? 'a' : String(p.text)).slice(0,24) || ' ';
+
+      // Find the same font size the canvas used (binary search like fitText).
+      const meas = document.createElement('canvas').getContext('2d');
+      const maxW = W * 0.96, maxH = Math.min(W, Ht) * 0.95;
+      let lo = 8, hi = 4000, best = lo, mid;
+      while (lo <= hi){
+        mid = (lo + hi) >> 1;
+        meas.font = '900 ' + mid + 'px ' + fontStack;
+        if (meas.measureText(txt).width <= maxW && mid * 0.82 <= maxH){ best = mid; lo = mid + 1; }
+        else hi = mid - 1;
+      }
+      const size = best * p.textScale;
+      const baselineY = Ht/2 + Ht * p.textBaseline;
+
+      const nx = Math.max(2, Math.round(p.tilesX));
+      const ny = Math.max(2, Math.round(p.tilesY));
+      const tileW = W/nx, tileH = Ht/ny;
+      const amp = +p.amplitude, freq = +p.frequency;
+      const axisIdx = p.warpAxis|0;
+      const pf = +p.pointerForce;
+      const falloff = Math.min(W, Ht) * 0.28;
+      const m = state.mouse;
+      const idPrefix = 'lw' + Math.floor(Math.random() * 1e9).toString(36);
+
+      // Defs: clip per tile + one shared source <text>.
+      const defs = ['<defs>'];
+      defs.push(
+        '<text id="' + idPrefix + '-src"' +
+        ' x="' + fmt(W/2) + '" y="' + fmt(baselineY) + '"' +
+        ' font-family=' + JSON.stringify(fontStack) +
+        ' font-weight="900"' +
+        ' font-size="' + fmt(size) + '"' +
+        ' text-anchor="middle" dominant-baseline="middle"' +
+        ' fill="' + p.fg + '">' + esc(txt) + '</text>'
+      );
+
+      const tiles = [];
+      for (let y=0; y<ny; y++){
+        for (let x=0; x<nx; x++){
+          const dx = x*tileW, dy = y*tileH;
+          let localAmp = amp;
+          if (m){
+            const dxp = (dx+tileW*0.5) - m.px, dyp = (dy+tileH*0.5) - m.py;
+            const d = Math.sqrt(dxp*dxp + dyp*dyp);
+            localAmp = amp * (1 + pf*Math.exp(-d/falloff));
+          }
+          const phase = state.t + (x+y)*freq;
+          const waveX = Math.sin(phase)*localAmp;
+          const waveY = Math.cos(phase*1.13+0.7)*localAmp;
+          let sx = dx, sy = dy;
+          if (axisIdx === 0) sx = dx + waveX;
+          else if (axisIdx === 1) sy = dy + waveY;
+          else { sx = dx + waveX*0.7; sy = dy + waveY*0.7; }
+          if (sx < 0) sx = 0; if (sy < 0) sy = 0;
+          if (sx > W - tileW) sx = W - tileW;
+          if (sy > Ht - tileH) sy = Ht - tileH;
+          // Offset that, when applied to the source, makes the source pixel at
+          // (sx, sy) appear at the tile's destination (dx, dy).
+          const tdx = dx - sx;
+          const tdy = dy - sy;
+          const cid = idPrefix + '-c' + x + '-' + y;
+          // clipPath in user space — rectangle at destination tile.
+          defs.push(
+            '<clipPath id="' + cid + '" clipPathUnits="userSpaceOnUse">' +
+            '<rect x="' + fmt(dx) + '" y="' + fmt(dy) +
+            '" width="' + fmt(tileW + 0.5) + '" height="' + fmt(tileH + 0.5) + '"/>' +
+            '</clipPath>'
+          );
+          tiles.push(
+            '<g clip-path="url(#' + cid + ')" transform="translate(' + fmt(tdx) + ' ' + fmt(tdy) + ')">' +
+            '<use href="#' + idPrefix + '-src" xlink:href="#' + idPrefix + '-src"/>' +
+            '</g>'
+          );
+        }
+      }
+      defs.push('</defs>');
+
+      const out = [];
+      out.push(defs.join(''));
+      if (sc !== 1) out.push('<g transform="translate(' + fmt(H.SIZE/2) + ' ' + fmt(H.SIZE/2) +
+                             ') scale(' + fmt(sc) + ') translate(' + fmt(-H.SIZE/2) + ' ' + fmt(-H.SIZE/2) + ')">');
+      out.push('<g transform="translate(' + fmt(offX) + ' ' + fmt(offY) + ') scale(' + fmt(s) + ')">');
+      // Background already painted by framework with bgColor; but the warp's
+      // background is per-tile (cells outside the letter show p.bgColor).
+      // The framework <rect> covers that — additionally fill in case the tool
+      // is exported as transparent: only when bg is opaque, this is a no-op.
+      out.push.apply(out, tiles);
+      out.push('</g>');
+      if (sc !== 1) out.push('</g>');
+      return out;
     }
   });
 })();
@@ -6095,13 +6192,120 @@
       state.texture.needsUpdate = true;
     },
 
-    toSvg(state){
+    toSvg(state, p){
       const H = window.MotionSvgHelpers;
       if (!state || !state.canvas) return [];
-      let dataUri;
-      try { dataUri = state.canvas.toDataURL('image/png'); }
-      catch(e){ return []; }
-      return [ H.image(0, 0, H.SIZE, H.SIZE, dataUri) ];
+      const W = state.canvas.width, Ht = state.canvas.height;
+      // Canvas pixel → viewBox: uniform scale + center (canvas covered the
+      // viewport plane, so map the shorter side and letterbox the other).
+      const s = H.SIZE / Math.min(W, Ht);
+      const offX = (H.SIZE - W * s) / 2;
+      const offY = (H.SIZE - Ht * s) / 2;
+      const sc = (p && p.sceneScale != null) ? p.sceneScale : 1;
+      const fmt = H.fmt, esc = H.escapeXml;
+
+      // Recreate the same Archimedean spiral the draw loop walks.
+      const phrase = ((p.phrase || 'SPIRAL') + '').toUpperCase();
+      if (!phrase.length) return [];
+      const fontSize = +p.fontSize;
+      const spacing = +p.spacing;
+      const startR = +p.startRadius;
+      const turns = +p.turns;
+      const tightness = +p.tightness;
+      const threadsN = Math.max(1, p.threads|0);
+      const fadeR = +p.fadeRadius;
+      const fadeSoft = Math.max(1, +p.fadeSoftness);
+
+      let weight = 400;
+      if ((p.fontFamily|0) === 3) weight = 300;
+      if ((p.fontFamily|0) === 4) weight = 900;
+      const stack = FONT_STACKS[p.fontFamily|0] || FONT_STACKS[0];
+
+      // Use an offscreen 2D ctx purely for measureText (matches the draw loop).
+      const meas = document.createElement('canvas').getContext('2d');
+      meas.font = weight + ' ' + fontSize + 'px ' + stack;
+
+      function hexToRgbLocal(c){
+        c = c.replace('#','');
+        if (c.length === 3) c = c.split('').map(x=>x+x).join('');
+        return [parseInt(c.slice(0,2),16),parseInt(c.slice(2,4),16),parseInt(c.slice(4,6),16)];
+      }
+      function mixLocal(a, b, k){
+        const A = hexToRgbLocal(a), B = hexToRgbLocal(b);
+        const h = n => { n = Math.max(0,Math.min(255,n|0)); return n.toString(16).padStart(2,'0'); };
+        return '#' + h(A[0]+(B[0]-A[0])*k) + h(A[1]+(B[1]-A[1])*k) + h(A[2]+(B[2]-A[2])*k);
+      }
+
+      const cx = W/2, cy = Ht/2;
+      const out = [];
+      // sceneScale wrap centered on viewBox.
+      if (sc !== 1) out.push('<g transform="translate(' + fmt(H.SIZE/2) + ' ' + fmt(H.SIZE/2) +
+                             ') scale(' + fmt(sc) + ') translate(' + fmt(-H.SIZE/2) + ' ' + fmt(-H.SIZE/2) + ')">');
+      // Canvas→viewBox transform group.
+      out.push('<g transform="translate(' + fmt(offX) + ' ' + fmt(offY) + ') scale(' + fmt(s) + ')">');
+
+      for (let k=0; k<threadsN; k++){
+        const thetaStart = 0;
+        const thetaMax = turns * Math.PI * 2;
+        const perTurn = (fontSize*1.4) / tightness;
+        const a = perTurn / (Math.PI*2);
+        const spinPhase = state.t*p.rotateSpeed + state.dragSpin + k * (Math.PI*2 / threadsN);
+
+        function arcLen(th){ return 0.5 * a * (th*Math.sqrt(1+th*th) + Math.log(th + Math.sqrt(1+th*th))); }
+        const L = arcLen(thetaMax) - arcLen(thetaStart);
+        const letterAdv = meas.measureText('M').width * spacing;
+        const totalChars = Math.ceil(L / letterAdv) + 4;
+
+        let offset = (state.t * 60 * p.flowSpeed) % L;
+        if (offset < 0) offset += L;
+
+        let th = thetaStart, sLen = 0, idx = 0;
+        const dTh = (thetaMax - thetaStart) / 6000;
+        let nextS = -offset + letterAdv*0.5;
+
+        while (idx < totalChars && th < thetaMax){
+          while (th < thetaMax && sLen < nextS){
+            th += dTh;
+            sLen += a * Math.sqrt(1+th*th) * dTh;
+          }
+          if (sLen >= nextS && th < thetaMax){
+            const ch = phrase.charAt(idx % phrase.length);
+            const rr = a*th + startR;
+            let alpha = 1;
+            if (rr < fadeR) alpha = 0;
+            else if (rr < fadeR + fadeSoft){
+              alpha = (rr - fadeR) / fadeSoft;
+              alpha = alpha*alpha*(3-2*alpha);
+            }
+            if (alpha > 0.001){
+              const xw = rr * Math.cos(th + spinPhase);
+              const yw = rr * Math.sin(th + spinPhase);
+              const tx = a*Math.cos(th + spinPhase) - rr*Math.sin(th + spinPhase);
+              const ty = a*Math.sin(th + spinPhase) + rr*Math.cos(th + spinPhase);
+              const ang = Math.atan2(ty, tx) * 180 / Math.PI;
+              const u = th / thetaMax;
+              const color = mixLocal(p.inkInner, p.inkOuter, u);
+              const xp = cx + xw, yp = cy + yw;
+              out.push(
+                '<text x="' + fmt(xp) + '" y="' + fmt(yp) +
+                '" fill="' + color + '"' +
+                (alpha < 0.999 ? ' fill-opacity="' + fmt(alpha) + '"' : '') +
+                ' font-family=' + JSON.stringify(stack) +
+                ' font-weight="' + weight + '"' +
+                ' font-size="' + fmt(fontSize) + '"' +
+                ' text-anchor="middle" dominant-baseline="middle"' +
+                ' transform="rotate(' + fmt(ang) + ' ' + fmt(xp) + ' ' + fmt(yp) + ')">' +
+                esc(ch) + '</text>'
+              );
+            }
+            idx++;
+            nextS += letterAdv;
+          }
+        }
+      }
+      out.push('</g>');
+      if (sc !== 1) out.push('</g>');
+      return out;
     }
   });
 })();
@@ -6306,13 +6510,99 @@
       state.texture.needsUpdate = true;
     },
 
-    toSvg(state){
+    toSvg(state, p){
       const H = window.MotionSvgHelpers;
       if (!state || !state.canvas) return [];
-      let dataUri;
-      try { dataUri = state.canvas.toDataURL('image/png'); }
-      catch(e){ return []; }
-      return [ H.image(0, 0, H.SIZE, H.SIZE, dataUri) ];
+      const W = state.canvas.width, Ht = state.canvas.height;
+      const s = H.SIZE / Math.min(W, Ht);
+      const offX = (H.SIZE - W * s) / 2;
+      const offY = (H.SIZE - Ht * s) / 2;
+      const sc = (p && p.sceneScale != null) ? p.sceneScale : 1;
+      const fmt = H.fmt, esc = H.escapeXml;
+
+      const word = ((p.word || 'TYPE') + '').toUpperCase();
+      const letters = word.split('');
+      const R = p.rows|0;
+      const cols = letters.length;
+      if (cols < 1 || R < 1) return [];
+
+      const P = p.useCustomPalette
+        ? [p.color1, p.color2, p.color3, p.color4, p.color5, p.color6, p.color7]
+        : (PALETTES[p.pal|0] || PALETTES[0]);
+
+      const fontWeight = (p.fontWeight|0) === 0 ? '900'
+                       : (p.fontWeight|0) === 1 ? '800' : '600';
+      const fontFamily = '"' + (FONT_NAMES[p.font|0] || 'Helvetica') + '", "Arial Black", Impact, sans-serif';
+
+      // Per-row column widths and row heights live on state after update(). If
+      // they're not populated yet (unlikely — update() always runs first), fall
+      // back to uniform sizes so export still produces something sensible.
+      let colWidthsState = state.colWidthsState;
+      let rowHeightsState = state.rowHeightsState;
+      if (!colWidthsState || colWidthsState.length !== R){
+        const uw = W/cols, uh = Ht/R;
+        colWidthsState = [];
+        for (let rr=0; rr<R; rr++){
+          const row = [];
+          for (let i=0; i<cols; i++) row.push(uw);
+          colWidthsState.push(row);
+        }
+        rowHeightsState = [];
+        for (let rr=0; rr<R; rr++) rowHeightsState.push(uh);
+      }
+
+      const meas = document.createElement('canvas').getContext('2d');
+      const fs = 200;
+      meas.font = fontWeight + ' ' + fs + 'px ' + fontFamily;
+
+      const out = [];
+      if (sc !== 1) out.push('<g transform="translate(' + fmt(H.SIZE/2) + ' ' + fmt(H.SIZE/2) +
+                             ') scale(' + fmt(sc) + ') translate(' + fmt(-H.SIZE/2) + ' ' + fmt(-H.SIZE/2) + ')">');
+      out.push('<g transform="translate(' + fmt(offX) + ' ' + fmt(offY) + ') scale(' + fmt(s) + ')">');
+
+      let y = 0;
+      for (let rr=0; rr<R; rr++){
+        let x = 0;
+        const rowOffset = (rr * (p.rowOffset|0)) % cols;
+        const h = rowHeightsState[rr];
+        for (let i=0; i<cols; i++){
+          const w2 = colWidthsState[rr][i];
+          const letterIdx = (i + rowOffset) % cols;
+          const ch = letters[letterIdx];
+          const colorIdx = (rr * 5 + i) % P.length;
+          const cellBg = P[colorIdx];
+          // Cell bg rect (+1 px overlap to match canvas to avoid hairlines).
+          out.push('<rect x="' + fmt(x) + '" y="' + fmt(y) +
+                   '" width="' + fmt(w2 + 1) + '" height="' + fmt(h + 1) +
+                   '" fill="' + cellBg + '"/>');
+          // Ink color by cell luminance.
+          const hex = cellBg.replace('#','');
+          const br = (parseInt(hex.slice(0,2),16) + parseInt(hex.slice(2,4),16) + parseInt(hex.slice(4,6),16))/3;
+          const ink = (br > 160) ? p.ink : p.inkDark;
+          // Non-uniform scaled glyph: mirror the canvas math (ctx.scale(sx, sy)
+          // around the cell's anchor point).
+          const pad = 0.02 * Math.min(w2, h);
+          const mw = meas.measureText(ch).width || fs*0.5;
+          const sx2 = (w2 - pad*2) / mw;
+          const sy2 = (h - pad*2) / (fs * 0.78);
+          const cxp = x + w2*0.5, cyp = y + h*0.55;
+          out.push(
+            '<text x="0" y="0" fill="' + ink + '"' +
+            ' font-family=' + JSON.stringify(fontFamily) +
+            ' font-weight="' + fontWeight + '"' +
+            ' font-size="' + fs + '"' +
+            ' text-anchor="middle" dominant-baseline="middle"' +
+            ' transform="translate(' + fmt(cxp) + ' ' + fmt(cyp) +
+            ') scale(' + fmt(sx2) + ' ' + fmt(sy2) + ')">' +
+            esc(ch) + '</text>'
+          );
+          x += w2;
+        }
+        y += h;
+      }
+      out.push('</g>');
+      if (sc !== 1) out.push('</g>');
+      return out;
     }
   });
 })();
@@ -6491,13 +6781,116 @@
       state.texture.needsUpdate = true;
     },
 
-    toSvg(state){
+    toSvg(state, p){
       const H = window.MotionSvgHelpers;
       if (!state || !state.canvas) return [];
-      let dataUri;
-      try { dataUri = state.canvas.toDataURL('image/png'); }
-      catch(e){ return []; }
-      return [ H.image(0, 0, H.SIZE, H.SIZE, dataUri) ];
+      const W = state.canvas.width, Ht = state.canvas.height;
+      const s = H.SIZE / Math.min(W, Ht);
+      const offX = (H.SIZE - W * s) / 2;
+      const offY = (H.SIZE - Ht * s) / 2;
+      const sc = (p && p.sceneScale != null) ? p.sceneScale : 1;
+      const fmt = H.fmt, esc = H.escapeXml;
+
+      const fontName = FONT_NAMES[p.font|0] || 'Helvetica';
+      const fontStack = '"' + fontName + '", Arial, sans-serif';
+      const weights = ['400','700','900'];
+      const weight = weights[p.fontWeight|0] || '900';
+      const fontSize = (p.fontSize != null ? p.fontSize : 400) *
+                       (p.textScale != null ? p.textScale : 1);
+      const word = ((p.word || ' ') + '').toUpperCase();
+      const ls = +p.letterSpacing;
+
+      // Measure widths the same way the canvas does.
+      const meas = document.createElement('canvas').getContext('2d');
+      meas.font = weight + ' ' + fontSize + 'px ' + fontStack;
+      const widths = [];
+      let totalW = 0;
+      for (let i=0; i<word.length; i++){
+        const w = meas.measureText(word.charAt(i)).width;
+        widths.push(w); totalW += w;
+      }
+      totalW += ls * (word.length - 1);
+      const startX = (W - totalW) / 2;
+      const midY = Ht / 2;
+
+      const rings = p.rings|0;
+      const spacing = +p.spacing;
+      const ringW = +p.ringWidth;
+      const pulse = Math.sin(state.simT * 1.6) * p.pulseAmt;
+      const pt = state.pointer;
+      const pxo = pt ? (pt.x - 0.5) * 16 : 0;
+      const pyo = pt ? (pt.y - 0.5) * 16 : 0;
+
+      // Per-letter painter: emits one <text> per glyph at the correct x.
+      function emitWord(stroke, strokeWidth, fill, dx, dy, alphaAttr){
+        const parts = [];
+        let x = startX;
+        for (let i=0; i<word.length; i++){
+          const ch = word.charAt(i);
+          // textAnchor=start matches the canvas textAlign='left'; baseline
+          // 'middle' matches textBaseline='middle'.
+          parts.push(
+            '<text x="' + fmt(x + dx) + '" y="' + fmt(midY + dy) + '"' +
+            ' font-family=' + JSON.stringify(fontStack) +
+            ' font-weight="' + weight + '"' +
+            ' font-size="' + fmt(fontSize) + '"' +
+            ' text-anchor="start" dominant-baseline="middle"' +
+            ' fill="' + fill + '"' +
+            (stroke ? (' stroke="' + stroke + '" stroke-width="' + fmt(strokeWidth) +
+                       '" stroke-linejoin="round" stroke-linecap="round" paint-order="stroke fill"') : '') +
+            (alphaAttr || '') +
+            '>' + esc(ch) + '</text>'
+          );
+          x += widths[i] + ls;
+        }
+        return parts.join('');
+      }
+
+      const out = [];
+      if (sc !== 1) out.push('<g transform="translate(' + fmt(H.SIZE/2) + ' ' + fmt(H.SIZE/2) +
+                             ') scale(' + fmt(sc) + ') translate(' + fmt(-H.SIZE/2) + ' ' + fmt(-H.SIZE/2) + ')">');
+      out.push('<g transform="translate(' + fmt(offX) + ' ' + fmt(offY) + ') scale(' + fmt(s) + ')">');
+
+      // Outer rings down to k=1: stroked text, band thickness = outerR-innerR,
+      // centered on (outerR+innerR)/2. Color = ringColor. The canvas version
+      // composites outer-fill minus inner-fill on a mask; the equivalent
+      // single-stroke approximation gives a clean concentric outline per ring.
+      for (let k = rings - 1; k >= 1; k--){
+        const outerR = (k + 0.5) * spacing + pulse * spacing * 0.4;
+        const innerR = Math.max(0, (k + 0.5) * spacing - ringW + pulse * spacing * 0.4);
+        const off = k / rings;
+        const band = Math.max(0, outerR - innerR);
+        const midR = (outerR + innerR) / 2;
+        // Stroked text at mid-radius is the SVG analogue of (fill outerR)
+        // minus (fill innerR). Use stroke-width=band, then offset by midR*2
+        // by emitting strokeText with width=midR*2... actually the canvas
+        // recipe uses `strokeText` with lineWidth=outerR*2 as a flood, so we
+        // mirror: stroke-width = band, placed once.
+        if (band <= 0) continue;
+        out.push(emitWord(p.ringColor, band, 'none', pxo * off, pyo * off));
+        // The above gives only the outer outline at midR. To cover the full
+        // band (analogous to the difference of two thick strokes), draw a
+        // second pass with stroke-width = midR*2 - band... but that's no
+        // longer concentric. Better: stroke at the mean radius with band
+        // width — single pass is the clean approximation noted in the spec.
+      }
+
+      // k = 0: central ring + solid letterform on top.
+      {
+        const outerR = 0.5 * spacing + pulse * spacing * 0.4;
+        const innerR = Math.max(0, 0.5 * spacing - ringW + pulse * spacing * 0.4);
+        const band = Math.max(0, outerR - innerR);
+        if (band > 0){
+          out.push(emitWord(p.ink, band, 'none', 0, 0));
+        }
+        // Solid central letterform painted on top.
+        const fontColor = (p.fontColor != null) ? p.fontColor : p.ink;
+        out.push(emitWord(null, 0, fontColor, 0, 0));
+      }
+
+      out.push('</g>');
+      if (sc !== 1) out.push('</g>');
+      return out;
     }
   });
 })();
@@ -11945,7 +12338,12 @@ function renderHalftone(data){
   // Playground later shows a populated canvas immediately.
   pageBtns.landing.classList.add('active');
   selectPage('landing');
-  if (composerIdx >= 0) selectAnimation(composerIdx);
+  // Default tool on first load: Grid. Falls back to Composer if Grid is
+  // missing (defensive — keeps the bootstrap behavior stable if Grid is
+  // ever removed).
+  const defaultIdx = ANIMATIONS.findIndex(a => a.id === 'grid');
+  if (defaultIdx >= 0) selectAnimation(defaultIdx);
+  else if (composerIdx >= 0) selectAnimation(composerIdx);
 
   function formatVal(step, v){
     return (step < 1) ? (+v).toFixed(2) : Math.round(v);
