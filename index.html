@@ -7356,7 +7356,26 @@
     thumbs: new Map(),  // card -> { anim, params, renderer, scene, camera, group, state, mounted }
     active: new Set(),  // cards currently hovered → tick each frame
     register(card, anim){
-      this.thumbs.set(card, { anim, mounted: false });
+      const d = { anim, mounted: false };
+      this.thumbs.set(card, d);
+      // Eagerly mount + render one preview frame so the card shows the
+      // effect immediately instead of the "hover" placeholder. Ticking
+      // still only happens on hover, so idle cost stays low.
+      // Defer slightly so the main-page animation can paint first.
+      const self = this;
+      setTimeout(() => {
+        try {
+          if (!d.mounted) self.mount(card, d);
+          self.renderOne(card);
+        } catch(e){ /* per-card mount errors shouldn't break the gallery */ }
+      }, 0);
+    },
+    renderOne(card){
+      const d = this.thumbs.get(card);
+      if (!d || !d.mounted) return;
+      if (d.params.bgColor) d.renderer.setClearColor(d.params.bgColor, 1);
+      try { d.anim.update(0, d.params, d.state); } catch(e){}
+      d.renderer.render(d.scene, d.camera);
     },
     start(card){
       const d = this.thumbs.get(card);
