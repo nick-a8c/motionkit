@@ -7274,6 +7274,9 @@
   // before that later declaration would have initialised — accessing a const
   // in its TDZ throws and silently kills page setup.
   const SECTION_OPEN_STATE = {};
+  // Same TDZ concern for the SVG-button cache: bootstrap → selectAnimation
+  // → refreshExportSvgButton runs before the later `let` declaration.
+  let _lastSvgBtnOk = null;
 
   // Track latest pixel size — Line2 materials need their resolution
   // synced for thickness to render correctly.
@@ -12838,7 +12841,7 @@ function renderHalftone(data){
   // currently-chosen font (e.g. Grid on a system font without a fontsource
   // TTF, where the marching-squares trace can't reach type-quality smoothness).
   // Each anim can declare `canExportSvg(params)` to override the default.
-  let _lastSvgBtnOk = null;
+  // (_lastSvgBtnOk hoisted to the top of this IIFE — see "State variables".)
   function refreshExportSvgButton(){
     if (!currentAnim) return;
     let ok = typeof currentAnim.toSvg === 'function';
