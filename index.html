@@ -5948,7 +5948,7 @@
     controls: [
       { section: 'Source' },
       { key: 'sceneScale', label: 'Scene scale', min: 0.1, max: 2.0, step: 0.01, value: 1 },
-      { key: 'phrase',     label: 'Phrase', type: 'text', value: 'RODANDO' },
+      { key: 'phrase',     label: 'Phrase', type: 'text', value: 'A8C', maxLength: 12 },
       { key: 'fontSize',   label: 'Font size',     min: 10, max: 80, step: 1, value: 56 },
       { key: 'spacing',    label: 'Letter spacing',min: 0.6, max: 2.0, step: 0.02, value: 1 },
       { key: 'fontFamily', label: 'Typeface', type: 'choices', value: 0, choices: [
@@ -6947,6 +6947,27 @@
       cursorStrength: 0.2,
       cursorRadius: 220,
       cursorSoftness: 0.92,
+    },
+    'letter-warp': {
+      text: 'Queen',
+      textBaseline: -0.03,
+      bgColor: '#5B77FF',
+      fg:      '#F2E9D8',
+    },
+    'word-snake': {
+      phrase:   'A8C',
+      bgColor:  '#5B77FF',
+      inkInner: '#F2E9D8',
+      inkOuter: '#F2E9D8',
+    },
+    grid: {
+      color1: '#5B77FF',
+      color2: '#EF3B2D',
+      color3: '#000000',
+      color4: '#f0ff1f',
+      color5: '#ffffff',
+      color6: '#a5ee8b',
+      color7: '#2205ff',
     },
   };
   ANIMATIONS.forEach(anim => {
