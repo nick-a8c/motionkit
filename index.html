@@ -579,6 +579,11 @@
 <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/lines/LineMaterial.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/lines/LineSegments2.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/lines/Line2.js"></script>
+<!-- opentype.js parses TTF/OTF font files at runtime so the Grid SVG export
+     can emit the font designer's true cubic Béziers instead of pixel-traced
+     polylines. Loaded async; toSvg falls back to marching-squares trace if
+     the parser or the requested font file isn't available yet. -->
+<script src="https://cdn.jsdelivr.net/npm/opentype.js@1.3.4/dist/opentype.min.js"></script>
 
 <script>
 // ============================================
@@ -6333,7 +6338,33 @@
     4: ['#0a0a0a','#1d1d1d','#2c2c2c','#9a9a9a','#ffffff','#ff3b30','#ffd000']  // noir
   };
 
-  const FONT_NAMES = ['Helvetica','Arial','Roboto Condensed','Georgia','Times','Courier','Impact','Verdana','Tahoma'];
+  const FONT_NAMES = ['Inter','Helvetica','Arial','Roboto Condensed','Anton','Bebas Neue','Oswald','Georgia','Times','Courier','Impact','Verdana','Tahoma'];
+
+  // opentype.js TTF URLs for the fonts where we can grab the true outlines
+  // (fontsource hosts TTF for every Google Fonts family). System fonts
+  // (Helvetica/Georgia/etc.) are absent → Grid falls back to the traced
+  // marching-squares path for those.
+  const FONT_OT_URLS = {
+    'Inter':            'https://cdn.jsdelivr.net/fontsource/fonts/inter@latest/latin-900-normal.ttf',
+    'Roboto Condensed': 'https://cdn.jsdelivr.net/fontsource/fonts/roboto-condensed@latest/latin-700-normal.ttf',
+    'Anton':            'https://cdn.jsdelivr.net/fontsource/fonts/anton@latest/latin-400-normal.ttf',
+    'Bebas Neue':       'https://cdn.jsdelivr.net/fontsource/fonts/bebas-neue@latest/latin-400-normal.ttf',
+    'Oswald':           'https://cdn.jsdelivr.net/fontsource/fonts/oswald@latest/latin-700-normal.ttf',
+  };
+  const _otFontCache = {};
+  const _otFontPending = {};
+  function loadOpentypeFont(name){
+    if (_otFontCache[name]) return Promise.resolve(_otFontCache[name]);
+    if (_otFontPending[name]) return _otFontPending[name];
+    const url = FONT_OT_URLS[name];
+    if (!url || typeof window.opentype === 'undefined') return Promise.resolve(null);
+    const p = fetch(url)
+      .then(r => r.arrayBuffer())
+      .then(buf => { const f = window.opentype.parse(buf); _otFontCache[name] = f; return f; })
+      .catch(() => null);
+    _otFontPending[name] = p;
+    return p;
+  }
 
   function gauss(d, sigma){ return Math.exp(-(d*d)/(2*sigma*sigma)); }
 
@@ -6418,6 +6449,11 @@
         state.lastW = v.w; state.lastH = v.h;
         state.colWidthsState = []; state.rowHeightsState = [];
       }
+      // Pre-warm the opentype font for the active selection so SVG export can
+      // emit true cubic-Bézier outlines instead of a marching-squares trace.
+      // Fire-and-forget; export falls back to trace if the fetch isn't done.
+      const _ofName = FONT_NAMES[p.font|0];
+      if (FONT_OT_URLS[_ofName] && !_otFontCache[_ofName]) loadOpentypeFont(_ofName);
       const W = v.w, H = v.h, ctx = state.ctx;
       const now = performance.now();
       const localT = p.animEnabled ? (now - state.t0) * 0.001 : 0;
@@ -6682,8 +6718,43 @@
         }
         return { d: d.trim(), bbox: { w: bw, h: bh } };
       }
+      // Prefer opentype.js outlines when the active font has been parsed
+      // (the canvas's update() pre-warms it as soon as you switch fonts).
+      // Returns null if opentype isn't available for this font yet, in which
+      // case we fall through to the trace.
+      const activeFontName = FONT_NAMES[p.font|0];
+      const otFont = _otFontCache[activeFontName] || null;
+      function otGlyphPath(ch){
+        if (!otFont) return null;
+        try {
+          const glyph = otFont.charToGlyph(ch);
+          const fs = 720; // arbitrary natural size — we re-scale per cell anyway
+          const path = glyph.getPath(0, 0, fs);
+          const bb = path.getBoundingBox();
+          if (!isFinite(bb.x1) || bb.x2 <= bb.x1) return null;
+          const cx2 = (bb.x1 + bb.x2) / 2, cy2 = (bb.y1 + bb.y2) / 2;
+          // Iterate commands, recentring so the bbox centre is at (0,0). That
+          // matches what the trace path does, so the <g translate scale> wrap
+          // in each cell is identical regardless of which path we emit.
+          let d = '';
+          for (const c of path.commands){
+            if (c.type === 'M')       d += 'M' + fmt(c.x - cx2) + ' ' + fmt(c.y - cy2) + ' ';
+            else if (c.type === 'L')  d += 'L' + fmt(c.x - cx2) + ' ' + fmt(c.y - cy2) + ' ';
+            else if (c.type === 'C')  d += 'C' + fmt(c.x1 - cx2) + ' ' + fmt(c.y1 - cy2) + ' ' +
+                                              fmt(c.x2 - cx2) + ' ' + fmt(c.y2 - cy2) + ' ' +
+                                              fmt(c.x  - cx2) + ' ' + fmt(c.y  - cy2) + ' ';
+            else if (c.type === 'Q')  d += 'Q' + fmt(c.x1 - cx2) + ' ' + fmt(c.y1 - cy2) + ' ' +
+                                              fmt(c.x  - cx2) + ' ' + fmt(c.y  - cy2) + ' ';
+            else if (c.type === 'Z')  d += 'Z ';
+          }
+          return { d: d.trim(), bbox: { w: bb.x2 - bb.x1, h: bb.y2 - bb.y1 } };
+        } catch(e){ return null; }
+      }
       const traced = {};
-      letters.forEach(ch => { if (!(ch in traced)) traced[ch] = traceLetter(ch); });
+      letters.forEach(ch => {
+        if (ch in traced) return;
+        traced[ch] = otGlyphPath(ch) || traceLetter(ch);
+      });
 
       const out = [];
       // Emit a <defs> with one <path> per unique character. Cells reference
