@@ -5724,6 +5724,779 @@
 })();
 
 // ============================================
+// SECTION 3.6: Animation — Letter Warp
+// ============================================
+// Ported from handoff/projects/letter-warp. Renders a big letterform into an
+// offscreen source canvas, then redraws it tiled with sine-wave sampled
+// offsets. Pointer adds a local Gaussian amp bump. Output goes to a
+// CanvasTexture mapped onto a fullscreen plane sized to the live view.
+(function(){
+  'use strict';
+
+  // Inject the Google Fonts we need (Inter + Roboto Condensed) once globally.
+  // Lab already pulls Inter, but Roboto Condensed isn't covered.
+  function injectFonts(){
+    if (document.getElementById('motion-handoff-fonts')) return;
+    const link = document.createElement('link');
+    link.id = 'motion-handoff-fonts';
+    link.rel = 'stylesheet';
+    link.href = 'https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Roboto+Condensed:wght@700;900&display=swap';
+    document.head.appendChild(link);
+  }
+
+  function getViewDims(){
+    const v = window.MotionPlaygroundView;
+    if (v) return { w: Math.max(64, Math.round(v.w)), h: Math.max(64, Math.round(v.h)) };
+    return { w: 1100, h: 1100 };
+  }
+
+  function fitText(c, txt, font, maxW, maxH){
+    let lo=8, hi=4000, best=lo, size;
+    while (lo <= hi){
+      size = (lo+hi) >> 1;
+      c.font = '900 ' + size + 'px ' + font;
+      if (c.measureText(txt).width <= maxW && size*0.82 <= maxH){ best=size; lo=size+1; }
+      else hi=size-1;
+    }
+    return best;
+  }
+
+  window.MotionAnimations.push({
+    id: 'letter-warp',
+    label: 'Letter Warp',
+    bg: 0x454229,
+    metaColor: 'rgba(255,255,255,0.45)',
+
+    controls: [
+      { section: 'Source' },
+      { key: 'sceneScale', label: 'Scene scale', min: 0.1, max: 2.0, step: 0.01, value: 1 },
+      { key: 'text',        label: 'Text', type: 'text', value: 'Lucas' },
+      { key: 'textScale',   label: 'Text scale',     min: 0.2, max: 1.6, step: 0.01, value: 1.0 },
+      { key: 'textBaseline',label: 'Vertical offset',min: -0.5, max: 0.5, step: 0.005, value: -0.07 },
+      { key: 'font',        label: 'Font', type: 'choices', value: 0, choices: [
+          { value: 0, label: 'Helvetica' }, { value: 1, label: 'Arial' },
+          { value: 2, label: 'Roboto Condensed' }, { value: 3, label: 'Georgia' },
+          { value: 4, label: 'Times' }, { value: 5, label: 'Courier' },
+          { value: 6, label: 'Impact' }, { value: 7, label: 'Verdana' }, { value: 8, label: 'Tahoma' }
+      ] },
+      { section: 'Style' },
+      { key: 'bgColor',     label: 'Background', type: 'color', value: '#454229' },
+      { key: 'fg',          label: 'Letter',     type: 'color', value: '#FF2304' },
+      { key: 'tilesX',      label: 'Slices X', min: 2, max: 80, step: 1, value: 61 },
+      { key: 'tilesY',      label: 'Slices Y', min: 2, max: 80, step: 1, value: 30 },
+      { key: 'warpAxis',    label: 'Warp axis', type: 'choices', value: 0, choices: [
+          { value: 0, label: 'Horizontal' }, { value: 1, label: 'Vertical' }, { value: 2, label: 'Both' }
+      ] },
+      { section: 'Motion' },
+      { key: 'animEnabled', label: 'Animate',         type: 'toggle', value: true },
+      { key: 'speed',       label: 'Wave speed',      min: 0, max: 0.4, step: 0.005, value: 0.055 },
+      { key: 'amplitude',   label: 'Warp amplitude',  min: 0, max: 400, step: 1, value: 110 },
+      { key: 'frequency',   label: 'Wave frequency',  min: 0.02, max: 1.5, step: 0.01, value: 0.15 },
+      { section: 'Cursor' },
+      { key: 'pointerForce',label: 'Pointer push',    min: 0, max: 4, step: 0.05, value: 1.6 },
+    ],
+
+    attractor(state, mx, my){
+      if (mx == null){ state.mouse = null; return; }
+      const v = getViewDims();
+      state.mouse = {
+        px: (mx + v.w/2) / v.w * state.canvas.width,
+        py: (v.h/2 - my) / v.h * state.canvas.height
+      };
+    },
+
+    build(group){
+      injectFonts();
+      const v = getViewDims();
+      const canvas = document.createElement('canvas');
+      canvas.width = v.w; canvas.height = v.h;
+      const ctx = canvas.getContext('2d', { alpha: false });
+      ctx.imageSmoothingEnabled = false;
+      const src = document.createElement('canvas');
+      src.width = v.w; src.height = v.h;
+      const sctx = src.getContext('2d', { alpha: false });
+      sctx.imageSmoothingEnabled = true;
+      const tex = new THREE.CanvasTexture(canvas);
+      tex.minFilter = THREE.LinearFilter; tex.magFilter = THREE.LinearFilter;
+      const mat = new THREE.MeshBasicMaterial({ map: tex, transparent: false });
+      const mesh = new THREE.Mesh(new THREE.PlaneGeometry(v.w, v.h), mat);
+      group.add(mesh);
+      return {
+        group, canvas, ctx, src, sctx, texture: tex, material: mat, mesh,
+        mouse: null, t: 0, lastW: v.w, lastH: v.h,
+        cachedSrcKey: '',
+      };
+    },
+
+    update(t, p, state){
+      state.group.scale.setScalar(p.sceneScale != null ? p.sceneScale : 1);
+      const v = getViewDims();
+      if (v.w !== state.lastW || v.h !== state.lastH){
+        state.canvas.width = v.w; state.canvas.height = v.h;
+        state.src.width = v.w; state.src.height = v.h;
+        state.ctx.imageSmoothingEnabled = false;
+        state.sctx.imageSmoothingEnabled = true;
+        state.mesh.geometry.dispose();
+        state.mesh.geometry = new THREE.PlaneGeometry(v.w, v.h);
+        state.lastW = v.w; state.lastH = v.h;
+        state.cachedSrcKey = '';
+      }
+      const W = v.w, H = v.h;
+      const ctx = state.ctx, sctx = state.sctx;
+      if (p.animEnabled) state.t += p.speed;
+      const fontNames = ['Helvetica','Arial','Roboto Condensed','Georgia','Times','Courier','Impact','Verdana','Tahoma'];
+      const fontName = fontNames[p.font|0] || 'Helvetica';
+      const fontStack = '"' + fontName + '", "Roboto Condensed", "Arial Black", sans-serif';
+      const txt = (p.text == null ? 'a' : String(p.text)).slice(0,24) || ' ';
+
+      const key = [W,H,txt,p.bgColor,p.fg,p.textScale,p.textBaseline,fontName].join('|');
+      if (key !== state.cachedSrcKey){
+        state.cachedSrcKey = key;
+        sctx.fillStyle = p.bgColor; sctx.fillRect(0,0,W,H);
+        const maxDim = Math.min(W,H)*0.95;
+        const size = fitText(sctx, txt, fontStack, W*0.96, maxDim) * p.textScale;
+        sctx.font = '900 ' + size + 'px ' + fontStack;
+        sctx.fillStyle = p.fg; sctx.textAlign = 'center'; sctx.textBaseline = 'middle';
+        sctx.fillText(txt, W/2, H/2 + H*p.textBaseline);
+      }
+
+      ctx.fillStyle = p.bgColor; ctx.fillRect(0,0,W,H);
+      const nx = Math.max(2, Math.round(p.tilesX)), ny = Math.max(2, Math.round(p.tilesY));
+      const tileW = W/nx, tileH = H/ny;
+      const amp = p.amplitude, freq = p.frequency;
+      const axisIdx = p.warpAxis|0;
+      const pf = p.pointerForce;
+      const falloff = Math.min(W,H)*0.28;
+      const m = state.mouse;
+      for (let y=0; y<ny; y++){
+        for (let x=0; x<nx; x++){
+          const dx = x*tileW, dy = y*tileH;
+          let localAmp = amp;
+          if (m){
+            const dxp = (dx+tileW*0.5) - m.px, dyp = (dy+tileH*0.5) - m.py;
+            const d = Math.sqrt(dxp*dxp+dyp*dyp);
+            localAmp = amp * (1 + pf*Math.exp(-d/falloff));
+          }
+          const phase = state.t + (x+y)*freq;
+          const waveX = Math.sin(phase)*localAmp;
+          const waveY = Math.cos(phase*1.13+0.7)*localAmp;
+          let sx = dx, sy = dy;
+          if (axisIdx === 0) sx = dx + waveX;
+          else if (axisIdx === 1) sy = dy + waveY;
+          else { sx = dx + waveX*0.7; sy = dy + waveY*0.7; }
+          if (sx<0) sx=0; if (sy<0) sy=0;
+          if (sx > W-tileW) sx = W-tileW;
+          if (sy > H-tileH) sy = H-tileH;
+          ctx.drawImage(state.src, sx, sy, tileW, tileH, dx, dy, tileW+0.5, tileH+0.5);
+        }
+      }
+      state.texture.needsUpdate = true;
+    },
+
+    toSvg(state){
+      const H = window.MotionSvgHelpers;
+      if (!state || !state.canvas) return [];
+      let dataUri;
+      try { dataUri = state.canvas.toDataURL('image/png'); }
+      catch(e){ return []; }
+      return [ H.image(0, 0, H.SIZE, H.SIZE, dataUri) ];
+    }
+  });
+})();
+
+// ============================================
+// SECTION 3.7: Animation — Word Snake
+// ============================================
+// Ported from handoff/projects/word-snake. A phrase walks along an
+// Archimedean spiral, fading in past a center radius, color-blending from
+// inner ink to outer ink. Pointer movement (dragSpin) is fed via attractor —
+// when the cursor moves we accumulate angular delta around screen center.
+(function(){
+  'use strict';
+
+  function getViewDims(){
+    const v = window.MotionPlaygroundView;
+    if (v) return { w: Math.max(64, Math.round(v.w)), h: Math.max(64, Math.round(v.h)) };
+    return { w: 1100, h: 1100 };
+  }
+
+  function hexToRgb(c){
+    c = c.replace('#','');
+    if (c.length === 3) c = c.split('').map(x => x+x).join('');
+    return [parseInt(c.slice(0,2),16),parseInt(c.slice(2,4),16),parseInt(c.slice(4,6),16)];
+  }
+  function mix(a, b, k){
+    const A = hexToRgb(a), B = hexToRgb(b);
+    const h = n => { n = Math.max(0,Math.min(255,n|0)); return n.toString(16).padStart(2,'0'); };
+    return '#' + h(A[0]+(B[0]-A[0])*k) + h(A[1]+(B[1]-A[1])*k) + h(A[2]+(B[2]-A[2])*k);
+  }
+
+  const FONT_STACKS = {
+    0: 'Georgia, "Times New Roman", serif',
+    1: 'Inter, "Helvetica Neue", Arial, sans-serif',
+    2: 'ui-monospace, Menlo, Consolas, monospace',
+    3: 'Inter, "Helvetica Neue", Arial, sans-serif',
+    4: 'Impact, "Arial Black", sans-serif'
+  };
+
+  window.MotionAnimations.push({
+    id: 'word-snake',
+    label: 'Word Snake',
+    bg: 0xf3efe6,
+    metaColor: 'rgba(0,0,0,0.45)',
+
+    controls: [
+      { section: 'Source' },
+      { key: 'sceneScale', label: 'Scene scale', min: 0.1, max: 2.0, step: 0.01, value: 1 },
+      { key: 'phrase',     label: 'Phrase', type: 'text', value: 'RODANDO' },
+      { key: 'fontSize',   label: 'Font size',     min: 10, max: 80, step: 1, value: 56 },
+      { key: 'spacing',    label: 'Letter spacing',min: 0.6, max: 2.0, step: 0.02, value: 1 },
+      { key: 'fontFamily', label: 'Typeface', type: 'choices', value: 0, choices: [
+          { value: 0, label: 'Serif' }, { value: 1, label: 'Sans' }, { value: 2, label: 'Mono' },
+          { value: 3, label: 'Sans light' }, { value: 4, label: 'Display' }
+      ] },
+      { section: 'Style' },
+      { key: 'bgColor',  label: 'Paper',     type: 'color', value: '#f3efe6' },
+      { key: 'inkInner', label: 'Inner ink', type: 'color', value: '#0a0a0a' },
+      { key: 'inkOuter', label: 'Outer ink', type: 'color', value: '#5a5a5a' },
+      { key: 'turns',       label: 'Turns',        min: 2, max: 14, step: 0.1, value: 8.7 },
+      { key: 'tightness',   label: 'Tightness',    min: 0.4, max: 2.5, step: 0.01, value: 1.21 },
+      { key: 'startRadius', label: 'Inner radius', min: 0, max: 100, step: 1, value: 0 },
+      { key: 'threads',     label: 'Parallel threads', min: 1, max: 5, step: 1, value: 1 },
+      { key: 'fadeRadius',  label: 'Center fade radius', min: 0, max: 300, step: 1, value: 60 },
+      { key: 'fadeSoftness',label: 'Fade softness', min: 1, max: 200, step: 1, value: 40 },
+      { section: 'Motion' },
+      { key: 'animEnabled', label: 'Rotate', type: 'toggle', value: true },
+      { key: 'rotateSpeed', label: 'Rotation',    min: -1.5, max: 1.5, step: 0.01, value: -0.73 },
+      { key: 'flowSpeed',   label: 'Letter flow', min: -2,   max: 2,   step: 0.01, value: 2 },
+    ],
+
+    attractor(state, mx, my){
+      if (mx == null){ state.lastMouse = null; return; }
+      // Cursor world coords; we track delta angle around (0,0) screen center.
+      const ang = Math.atan2(-my, mx); // y inverted: world Y up → screen Y down
+      if (state.lastMouse != null){
+        let d = ang - state.lastMouse;
+        if (d >  Math.PI) d -= Math.PI*2;
+        if (d < -Math.PI) d += Math.PI*2;
+        state.dragSpin += d;
+      }
+      state.lastMouse = ang;
+    },
+
+    build(group){
+      const v = getViewDims();
+      const canvas = document.createElement('canvas');
+      canvas.width = v.w; canvas.height = v.h;
+      const ctx = canvas.getContext('2d');
+      const tex = new THREE.CanvasTexture(canvas);
+      tex.minFilter = THREE.LinearFilter; tex.magFilter = THREE.LinearFilter;
+      const mat = new THREE.MeshBasicMaterial({ map: tex, transparent: false });
+      const mesh = new THREE.Mesh(new THREE.PlaneGeometry(v.w, v.h), mat);
+      group.add(mesh);
+      return {
+        group, canvas, ctx, texture: tex, material: mat, mesh,
+        t: 0, dragSpin: 0, lastMouse: null,
+        lastW: v.w, lastH: v.h,
+      };
+    },
+
+    update(t, p, state){
+      state.group.scale.setScalar(p.sceneScale != null ? p.sceneScale : 1);
+      const v = getViewDims();
+      if (v.w !== state.lastW || v.h !== state.lastH){
+        state.canvas.width = v.w; state.canvas.height = v.h;
+        state.mesh.geometry.dispose();
+        state.mesh.geometry = new THREE.PlaneGeometry(v.w, v.h);
+        state.lastW = v.w; state.lastH = v.h;
+      }
+      const W = v.w, H = v.h;
+      const ctx = state.ctx;
+      if (p.animEnabled) state.t += 0.016;
+
+      ctx.fillStyle = p.bgColor; ctx.fillRect(0,0,W,H);
+      ctx.save();
+      ctx.translate(W/2, H/2);
+
+      let weight = 400;
+      if ((p.fontFamily|0) === 3) weight = 300;
+      if ((p.fontFamily|0) === 4) weight = 900;
+      const stack = FONT_STACKS[p.fontFamily|0] || FONT_STACKS[0];
+      ctx.font = weight + ' ' + p.fontSize + 'px ' + stack;
+      ctx.textBaseline = 'middle';
+      ctx.textAlign = 'left';
+
+      const phrase = (p.phrase || 'SPIRAL').toUpperCase();
+      const spacing = p.spacing;
+      const startR = p.startRadius;
+      const turns = p.turns;
+      const tightness = p.tightness;
+      const threadsN = Math.max(1, p.threads|0);
+
+      for (let k=0; k<threadsN; k++){
+        const thetaStart = 0;
+        const thetaMax = turns * Math.PI * 2;
+        const perTurn = (p.fontSize*1.4) / tightness;
+        const a = perTurn / (Math.PI*2);
+        const fadeR = p.fadeRadius;
+        const fadeSoft = Math.max(1, p.fadeSoftness);
+        const spinPhase = state.t*p.rotateSpeed + state.dragSpin + k * (Math.PI*2 / threadsN);
+
+        function arc(th){ return 0.5 * a * (th*Math.sqrt(1+th*th) + Math.log(th + Math.sqrt(1+th*th))); }
+        const L = arc(thetaMax) - arc(thetaStart);
+        const letterAdv = ctx.measureText('M').width * spacing;
+        const totalChars = Math.ceil(L / letterAdv) + 4;
+
+        let offset = (state.t * 60 * p.flowSpeed) % L;
+        if (offset < 0) offset += L;
+
+        let th = thetaStart, s = 0, idx = 0;
+        const dTh = (thetaMax - thetaStart) / 6000;
+        let nextS = -offset + letterAdv*0.5;
+
+        while (idx < totalChars && th < thetaMax){
+          while (th < thetaMax && s < nextS){
+            th += dTh;
+            s += a * Math.sqrt(1+th*th) * dTh;
+          }
+          if (s >= nextS && th < thetaMax){
+            const ch = phrase.charAt(idx % phrase.length);
+            const rr = a*th + startR;
+            let alpha = 1;
+            if (rr < fadeR) alpha = 0;
+            else if (rr < fadeR + fadeSoft){
+              alpha = (rr - fadeR) / fadeSoft;
+              alpha = alpha*alpha*(3-2*alpha);
+            }
+            if (alpha > 0.001){
+              const x = rr * Math.cos(th + spinPhase);
+              const y = rr * Math.sin(th + spinPhase);
+              const tx = a*Math.cos(th + spinPhase) - rr*Math.sin(th + spinPhase);
+              const ty = a*Math.sin(th + spinPhase) + rr*Math.cos(th + spinPhase);
+              const ang = Math.atan2(ty, tx);
+              const w = ctx.measureText(ch).width;
+              const u = th / thetaMax;
+              const color = mix(p.inkInner, p.inkOuter, u);
+              ctx.save();
+              ctx.translate(x, y);
+              ctx.rotate(ang);
+              ctx.globalAlpha = alpha;
+              ctx.fillStyle = color;
+              ctx.fillText(ch, -w*0.5, 0);
+              ctx.restore();
+            }
+            idx++;
+            nextS += letterAdv;
+          }
+        }
+      }
+      ctx.restore();
+      state.dragSpin *= 0.96;
+      state.texture.needsUpdate = true;
+    },
+
+    toSvg(state){
+      const H = window.MotionSvgHelpers;
+      if (!state || !state.canvas) return [];
+      let dataUri;
+      try { dataUri = state.canvas.toDataURL('image/png'); }
+      catch(e){ return []; }
+      return [ H.image(0, 0, H.SIZE, H.SIZE, dataUri) ];
+    }
+  });
+})();
+
+// ============================================
+// SECTION 3.8: Animation — Grid
+// ============================================
+// Ported from handoff/projects/grid. Tiles a word across rows × cols cells;
+// each cell expands via a 2D Gaussian peak around the cursor. Brightness of
+// the palette cell decides which ink color to use for the letter.
+(function(){
+  'use strict';
+
+  function getViewDims(){
+    const v = window.MotionPlaygroundView;
+    if (v) return { w: Math.max(64, Math.round(v.w)), h: Math.max(64, Math.round(v.h)) };
+    return { w: 1100, h: 1100 };
+  }
+
+  const PALETTES = {
+    0: ['#ec3a1e','#1056d6','#f9c533','#7c4dff','#0f9d58','#ffffff','#ff7ab6'], // pop
+    1: ['#ff7ab6','#ffd166','#06d6a0','#118ab2','#ef476f','#ffffff','#a88aff'], // candy
+    2: ['#0a0a0a','#f4f1ea','#a0593f','#c8c0a8','#3a3a3a','#ffffff','#ec3a1e'], // editorial
+    3: ['#161616','#262626','#404040','#9b9b9b','#e7e7e7','#ffd000','#ec3a1e'], // utility
+    4: ['#0a0a0a','#1d1d1d','#2c2c2c','#9a9a9a','#ffffff','#ff3b30','#ffd000']  // noir
+  };
+
+  const FONT_NAMES = ['Helvetica','Arial','Roboto Condensed','Georgia','Times','Courier','Impact','Verdana','Tahoma'];
+
+  function gauss(d, sigma){ return Math.exp(-(d*d)/(2*sigma*sigma)); }
+
+  window.MotionAnimations.push({
+    id: 'grid',
+    label: 'Grid',
+    bg: 0x000000,
+    metaColor: 'rgba(255,255,255,0.45)',
+
+    controls: [
+      { section: 'Source' },
+      { key: 'sceneScale', label: 'Scene scale', min: 0.1, max: 2.0, step: 0.01, value: 1 },
+      { key: 'word',       label: 'Word', type: 'text', value: 'A8C' },
+      { key: 'fontWeight', label: 'Weight', type: 'choices', value: 0, choices: [
+          { value: 0, label: 'Black' }, { value: 1, label: 'Bold' }, { value: 2, label: 'Regular' }
+      ] },
+      { key: 'font',       label: 'Font', type: 'choices', value: 0, choices: FONT_NAMES.map((n,i)=>({value:i,label:n})) },
+      { section: 'Style' },
+      { key: 'bgColor',    label: 'Background',     type: 'color', value: '#000000' },
+      { key: 'ink',        label: 'Ink (light bg)', type: 'color', value: '#000000' },
+      { key: 'inkDark',    label: 'Ink (dark bg)',  type: 'color', value: '#ffffff' },
+      { key: 'rows',       label: 'Rows',       min: 1, max: 8, step: 1, value: 4 },
+      { key: 'rowOffset',  label: 'Row offset', min: 0, max: 8, step: 1, value: 1 },
+      { key: 'useCustomPalette', label: 'Use custom colors', type: 'toggle', value: true },
+      { key: 'pal',        label: 'Palette', type: 'choices', value: 0, choices: [
+          { value: 0, label: 'Pop' }, { value: 1, label: 'Candy' }, { value: 2, label: 'Editorial' },
+          { value: 3, label: 'Utility' }, { value: 4, label: 'Noir' }
+      ] },
+      { key: 'color1', label: 'Color 1', type: 'color', value: '#000000' },
+      { key: 'color2', label: 'Color 2', type: 'color', value: '#454229' },
+      { key: 'color3', label: 'Color 3', type: 'color', value: '#E59238' },
+      { key: 'color4', label: 'Color 4', type: 'color', value: '#1D49FF' },
+      { key: 'color5', label: 'Color 5', type: 'color', value: '#ffffff' },
+      { key: 'color6', label: 'Color 6', type: 'color', value: '#EE89B3' },
+      { key: 'color7', label: 'Color 7', type: 'color', value: '#FF2304' },
+      { section: 'Motion' },
+      { key: 'animEnabled', label: 'Animate',   type: 'toggle', value: true },
+      { key: 'drift',       label: 'Idle drift',min: 0, max: 2, step: 0.01, value: 0.54 },
+      { section: 'Cursor' },
+      { key: 'focus',  label: 'Focus sharpness', min: 0.1, max: 2.5, step: 0.01, value: 0.35 },
+      { key: 'expand', label: 'Expand power',    min: 1.0, max: 10.0, step: 0.01, value: 10 },
+      { key: 'damping',label: 'Smoothing',       min: 0.01, max: 0.6, step: 0.01, value: 0.31 },
+    ],
+
+    attractor(state, mx, my){
+      if (mx == null){ state.mouse = null; return; }
+      const v = getViewDims();
+      // Convert world (-w/2..w/2, -h/2..h/2 with Y up) to normalized 0..1
+      // (X left→right, Y top→bottom).
+      state.mouse = {
+        u: (mx + v.w/2) / v.w,
+        v: (v.h/2 - my) / v.h
+      };
+    },
+
+    build(group){
+      const v = getViewDims();
+      const canvas = document.createElement('canvas');
+      canvas.width = v.w; canvas.height = v.h;
+      const ctx = canvas.getContext('2d');
+      const tex = new THREE.CanvasTexture(canvas);
+      tex.minFilter = THREE.LinearFilter; tex.magFilter = THREE.LinearFilter;
+      const mat = new THREE.MeshBasicMaterial({ map: tex, transparent: false });
+      const mesh = new THREE.Mesh(new THREE.PlaneGeometry(v.w, v.h), mat);
+      group.add(mesh);
+      return {
+        group, canvas, ctx, texture: tex, material: mat, mesh,
+        mouse: null, t0: performance.now(),
+        smX: 0.5, smY: 0.5,
+        colWidthsState: [], rowHeightsState: [],
+        lastW: v.w, lastH: v.h,
+      };
+    },
+
+    update(t, p, state){
+      state.group.scale.setScalar(p.sceneScale != null ? p.sceneScale : 1);
+      const v = getViewDims();
+      if (v.w !== state.lastW || v.h !== state.lastH){
+        state.canvas.width = v.w; state.canvas.height = v.h;
+        state.mesh.geometry.dispose();
+        state.mesh.geometry = new THREE.PlaneGeometry(v.w, v.h);
+        state.lastW = v.w; state.lastH = v.h;
+        state.colWidthsState = []; state.rowHeightsState = [];
+      }
+      const W = v.w, H = v.h, ctx = state.ctx;
+      const now = performance.now();
+      const localT = p.animEnabled ? (now - state.t0) * 0.001 : 0;
+
+      ctx.fillStyle = p.bgColor; ctx.fillRect(0,0,W,H);
+
+      const word = (p.word || 'TYPE').toUpperCase();
+      const letters = word.split('');
+      const R = p.rows|0;
+      const cols = letters.length;
+      if (cols < 1){ state.texture.needsUpdate = true; return; }
+
+      const d = p.damping;
+      const m = state.mouse;
+      const idleX = m ? m.u : 0.5 + 0.4 * Math.sin(localT * 0.6 * p.drift);
+      const idleY = m ? m.v : 0.5 + 0.4 * Math.cos(localT * 0.5 * p.drift);
+      state.smX += (idleX - state.smX) * d;
+      state.smY += (idleY - state.smY) * d;
+
+      const sig = p.focus, ex = p.expand;
+      const baseWidths = []; let baseSum = 0;
+      for (let i=0;i<cols;i++){
+        const u = (cols>1) ? (i + 0.5)/cols : 0.5;
+        const w = 1 + (gauss(u - state.smX, sig) * (ex - 1));
+        baseWidths.push(w); baseSum += w;
+      }
+      for (let i=0;i<cols;i++) baseWidths[i] = baseWidths[i] / baseSum * W;
+
+      const hWeights = []; let hsum = 0;
+      for (let rr=0;rr<R;rr++){
+        const u = (rr + 0.5)/R;
+        const w = 1 + (gauss(u - state.smY, sig*0.9) * (ex*0.85 - 1));
+        hWeights.push(w); hsum += w;
+      }
+      const rowH = [];
+      for (let rr=0;rr<R;rr++) rowH.push(hWeights[rr]/hsum * H);
+
+      if (state.colWidthsState.length !== R){
+        state.colWidthsState = [];
+        for (let rr=0;rr<R;rr++) state.colWidthsState.push(baseWidths.slice());
+        state.rowHeightsState = rowH.slice();
+      }
+      for (let rr=0;rr<R;rr++){
+        if (state.colWidthsState[rr].length !== cols) state.colWidthsState[rr] = baseWidths.slice();
+        for (let i=0;i<cols;i++){
+          state.colWidthsState[rr][i] += (baseWidths[i] - state.colWidthsState[rr][i]) * d;
+        }
+        state.rowHeightsState[rr] += (rowH[rr] - state.rowHeightsState[rr]) * d;
+      }
+
+      const P = p.useCustomPalette
+        ? [p.color1, p.color2, p.color3, p.color4, p.color5, p.color6, p.color7]
+        : (PALETTES[p.pal|0] || PALETTES[0]);
+
+      const fontWeight = (p.fontWeight|0) === 0 ? '900'
+                       : (p.fontWeight|0) === 1 ? '800' : '600';
+      const fontFamily = '"' + (FONT_NAMES[p.font|0] || 'Helvetica') + '", "Arial Black", Impact, sans-serif';
+
+      let y = 0;
+      for (let rr=0; rr<R; rr++){
+        let x = 0;
+        const rowOffset = (rr * (p.rowOffset|0)) % cols;
+        const h = state.rowHeightsState[rr];
+        for (let i=0;i<cols;i++){
+          const w2 = state.colWidthsState[rr][i];
+          const letterIdx = (i + rowOffset) % cols;
+          const ch = letters[letterIdx];
+          const colorIdx = (rr * 5 + i) % P.length;
+          ctx.fillStyle = P[colorIdx];
+          ctx.fillRect(x, y, w2 + 1, h + 1);
+          ctx.save();
+          const pad = 0.02 * Math.min(w2,h);
+          ctx.translate(x + w2*0.5, y + h*0.55);
+          const fs = 200;
+          ctx.font = fontWeight + ' ' + fs + 'px ' + fontFamily;
+          const mw = ctx.measureText(ch).width || fs*0.5;
+          const sx2 = (w2 - pad*2) / mw;
+          const sy2 = (h - pad*2) / (fs * 0.78);
+          ctx.scale(sx2, sy2);
+          const hex = P[colorIdx].replace('#','');
+          const br = (parseInt(hex.slice(0,2),16) + parseInt(hex.slice(2,4),16) + parseInt(hex.slice(4,6),16))/3;
+          ctx.fillStyle = (br > 160) ? p.ink : p.inkDark;
+          ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+          ctx.fillText(ch, 0, 0);
+          ctx.restore();
+          x += w2;
+        }
+        y += h;
+      }
+      state.texture.needsUpdate = true;
+    },
+
+    toSvg(state){
+      const H = window.MotionSvgHelpers;
+      if (!state || !state.canvas) return [];
+      let dataUri;
+      try { dataUri = state.canvas.toDataURL('image/png'); }
+      catch(e){ return []; }
+      return [ H.image(0, 0, H.SIZE, H.SIZE, dataUri) ];
+    }
+  });
+})();
+
+// ============================================
+// SECTION 3.9: Animation — Concentric
+// ============================================
+// Ported from handoff/projects/concentric. Each ring is a thick-stroked
+// silhouette of the word minus a slightly-thinner one — destination-out
+// compositing on an offscreen mask canvas produces the ring band.
+(function(){
+  'use strict';
+
+  function getViewDims(){
+    const v = window.MotionPlaygroundView;
+    if (v) return { w: Math.max(64, Math.round(v.w)), h: Math.max(64, Math.round(v.h)) };
+    return { w: 1100, h: 1100 };
+  }
+
+  const FONT_NAMES = ['Helvetica','Arial','Roboto Condensed','Georgia','Times','Courier','Impact','Verdana','Tahoma'];
+
+  window.MotionAnimations.push({
+    id: 'concentric',
+    label: 'Concentric',
+    bg: 0xF2EFEF,
+    metaColor: 'rgba(0,0,0,0.45)',
+
+    controls: [
+      { section: 'Source' },
+      { key: 'sceneScale', label: 'Scene scale', min: 0.1, max: 2.0, step: 0.01, value: 1 },
+      { key: 'word',          label: 'Word', type: 'text', value: 'MEXICO' },
+      { key: 'fontWeight',    label: 'Font weight', type: 'choices', value: 2, choices: [
+          { value: 0, label: '400' }, { value: 1, label: '700' }, { value: 2, label: '900' }
+      ] },
+      { key: 'letterSpacing', label: 'Letter spacing', min: -20, max: 80, step: 1, value: 8 },
+      { key: 'font',          label: 'Font', type: 'choices', value: 0, choices: FONT_NAMES.map((n,i)=>({value:i,label:n})) },
+      { section: 'Style' },
+      { key: 'bgColor',   label: 'Background', type: 'color', value: '#F2EFEF' },
+      { key: 'ink',       label: 'Ink',        type: 'color', value: '#000000' },
+      { key: 'ringColor', label: 'Ring color', type: 'color', value: '#000000' },
+      { key: 'rings',     label: 'Ring count',     min: 4, max: 60, step: 1, value: 31 },
+      { key: 'spacing',   label: 'Ring spacing',   min: 4, max: 40, step: 1, value: 7 },
+      { key: 'ringWidth', label: 'Ring thickness', min: 1, max: 16, step: 1, value: 4 },
+      { section: 'Motion' },
+      { key: 'animEnabled', label: 'Animate',      type: 'toggle', value: true },
+      { key: 'pulseSpeed',  label: 'Pulse speed',  min: 0, max: 3, step: 0.01, value: 2.44 },
+      { key: 'pulseAmt',    label: 'Pulse amount', min: 0, max: 1, step: 0.01, value: 0.2 },
+    ],
+
+    attractor(state, mx, my){
+      if (mx == null){ state.pointer = null; return; }
+      const v = getViewDims();
+      state.pointer = {
+        x: (mx + v.w/2) / v.w,
+        y: (v.h/2 - my) / v.h
+      };
+    },
+
+    build(group){
+      const v = getViewDims();
+      const canvas = document.createElement('canvas');
+      canvas.width = v.w; canvas.height = v.h;
+      const ctx = canvas.getContext('2d');
+      const maskCanvas = document.createElement('canvas');
+      maskCanvas.width = v.w; maskCanvas.height = v.h;
+      const mctx = maskCanvas.getContext('2d', { alpha: true });
+      const tex = new THREE.CanvasTexture(canvas);
+      tex.minFilter = THREE.LinearFilter; tex.magFilter = THREE.LinearFilter;
+      const mat = new THREE.MeshBasicMaterial({ map: tex, transparent: false });
+      const mesh = new THREE.Mesh(new THREE.PlaneGeometry(v.w, v.h), mat);
+      group.add(mesh);
+      return {
+        group, canvas, ctx, mask: maskCanvas, mctx,
+        texture: tex, material: mat, mesh,
+        pointer: null, t0: performance.now(), simT: 0,
+        lastW: v.w, lastH: v.h,
+      };
+    },
+
+    update(t, p, state){
+      state.group.scale.setScalar(p.sceneScale != null ? p.sceneScale : 1);
+      const v = getViewDims();
+      if (v.w !== state.lastW || v.h !== state.lastH){
+        state.canvas.width = v.w; state.canvas.height = v.h;
+        state.mask.width = v.w; state.mask.height = v.h;
+        state.mesh.geometry.dispose();
+        state.mesh.geometry = new THREE.PlaneGeometry(v.w, v.h);
+        state.lastW = v.w; state.lastH = v.h;
+      }
+      const W = v.w, H = v.h, ctx = state.ctx, mctx = state.mctx;
+      const now = performance.now();
+      const dt = Math.min(0.05, (now - state.t0) / 1000);
+      state.t0 = now;
+      if (p.animEnabled) state.simT += dt * p.pulseSpeed;
+
+      const fontName = FONT_NAMES[p.font|0] || 'Helvetica';
+      const fontStack = '"' + fontName + '", Arial, sans-serif';
+      const weights = ['400','700','900'];
+      const weight = weights[p.fontWeight|0] || '900';
+
+      function drawTextSilhouette(c, lineWidth, offsetX, offsetY){
+        c.save();
+        c.translate(offsetX || 0, offsetY || 0);
+        const fontSize = 0.36 * H;
+        const word = (p.word || ' ').toUpperCase();
+        c.font = weight + ' ' + fontSize + 'px ' + fontStack;
+        c.textBaseline = 'middle';
+        c.textAlign = 'left';
+        const widths = []; let totalW = 0;
+        for (let i=0; i<word.length; i++){
+          const w = c.measureText(word.charAt(i)).width;
+          widths.push(w); totalW += w;
+        }
+        const ls = p.letterSpacing;
+        totalW += ls * (word.length - 1);
+        const startX = (W - totalW) / 2;
+        const midY = H / 2;
+        let x = startX;
+        c.lineJoin = 'round'; c.lineCap = 'round';
+        c.fillStyle = '#000'; c.strokeStyle = '#000';
+        c.lineWidth = lineWidth;
+        for (let i=0; i<word.length; i++){
+          if (lineWidth > 0) c.strokeText(word.charAt(i), x, midY);
+          c.fillText(word.charAt(i), x, midY);
+          x += widths[i] + ls;
+        }
+        c.restore();
+      }
+
+      ctx.fillStyle = p.bgColor; ctx.fillRect(0,0,W,H);
+
+      const rings = p.rings|0;
+      const spacing = p.spacing;
+      const ringW = p.ringWidth;
+      const pulse = Math.sin(state.simT * 1.6) * p.pulseAmt;
+      const pt = state.pointer;
+      const pxo = pt ? (pt.x - 0.5) * 16 : 0;
+      const pyo = pt ? (pt.y - 0.5) * 16 : 0;
+
+      for (let k = rings - 1; k >= 0; k--){
+        const outerR = (k + 0.5) * spacing + pulse * spacing * 0.4;
+        const innerR = Math.max(0, (k + 0.5) * spacing - ringW + pulse * spacing * 0.4);
+        const off = k / rings;
+        if (k === 0){
+          mctx.clearRect(0, 0, W, H);
+          mctx.globalCompositeOperation = 'source-over';
+          drawTextSilhouette(mctx, outerR * 2, pxo * off, pyo * off);
+          mctx.globalCompositeOperation = 'destination-out';
+          drawTextSilhouette(mctx, Math.max(0, innerR * 2), pxo * off, pyo * off);
+          mctx.globalCompositeOperation = 'source-in';
+          mctx.fillStyle = p.ink;
+          mctx.fillRect(0, 0, W, H);
+          mctx.globalCompositeOperation = 'source-over';
+          ctx.drawImage(state.mask, 0, 0, W, H);
+          ctx.fillStyle = p.ink;
+          drawTextSilhouette(ctx, 0, 0, 0);
+          continue;
+        }
+        mctx.clearRect(0, 0, W, H);
+        mctx.globalCompositeOperation = 'source-over';
+        drawTextSilhouette(mctx, outerR * 2, pxo * off, pyo * off);
+        mctx.globalCompositeOperation = 'destination-out';
+        drawTextSilhouette(mctx, Math.max(0, innerR * 2), pxo * off, pyo * off);
+        mctx.globalCompositeOperation = 'source-in';
+        mctx.fillStyle = p.ringColor;
+        mctx.fillRect(0, 0, W, H);
+        mctx.globalCompositeOperation = 'source-over';
+        ctx.drawImage(state.mask, 0, 0, W, H);
+      }
+      state.texture.needsUpdate = true;
+    },
+
+    toSvg(state){
+      const H = window.MotionSvgHelpers;
+      if (!state || !state.canvas) return [];
+      let dataUri;
+      try { dataUri = state.canvas.toDataURL('image/png'); }
+      catch(e){ return []; }
+      return [ H.image(0, 0, H.SIZE, H.SIZE, dataUri) ];
+    }
+  });
+})();
+
+// ============================================
 // SECTION 4: Main app — renderer, registry, UI plumbing
 // ============================================
 (function(){
@@ -6540,6 +7313,10 @@
     { animId: 'dots'     },
     { animId: 'gradient' },
     { animId: 'halftone' },
+    { animId: 'letter-warp' },
+    { animId: 'word-snake'  },
+    { animId: 'grid'        },
+    { animId: 'concentric'  },
   ];
 
   const ThumbManager = {
