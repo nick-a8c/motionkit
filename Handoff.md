@@ -1,11 +1,133 @@
 # Handoff — MotionKit
 
 Single-file Three.js animation studio. HTML + CSS + every animation + every
-page lives in `index.html` (~11.5k lines, ~430KB). No build step, no
+page lives in `index.html` (~14k lines, ~550 KB). No build step, no
 `node_modules`, no bundler. Drop into any browser, or serve locally.
 
-Last checkpoint: **2026-05-20**. Repo: <https://github.com/nick-a8c/motionkit>
+Last checkpoint: **2026-05-26**. Repo: <https://github.com/nick-a8c/motionkit>
 (deployed at <https://nick-a8c.github.io/motionkit/>).
+
+### 2026-05-26 session — Visu collection + opentype SVG + font polish
+
+Four new Playground tools, real-vector SVG export upgrade, and a long
+tail of font / fit / UX polish.
+
+**Four new Playground tools** (cards now read top-to-bottom: Grid →
+Concentric → Word Snake → Letter Warp → Composer → Glyph → Vinyl → Waves →
+Dots → Particles → Halftone — 11 tools total). Each one is a self-contained
+2D-canvas effect ported from a visu.haus-style handoff folder, wrapped as a
+MotionKit animation via a `THREE.CanvasTexture` on a fullscreen plane:
+
+| Tool          | Section | What it does |
+|---|---|---|
+| **Letter Warp** | 3.6 | Tiled letterform with sine-wave offsets + Gaussian cursor amplitude bump |
+| **Word Snake**  | 3.7 | Phrase walks an Archimedean spiral with arc-length-correct spacing |
+| **Grid**        | 3.8 | Word tiles rows × cols with cells expanding around a 2D Gaussian peak |
+| **Concentric**  | 3.9 | Nested ring outlines of a word via `destination-out` compositing |
+
+Grid is the **default** tool on first load (used to be Composer); the
+bootstrap falls back to Composer if Grid is removed.
+
+**Gallery thumbnails now mount eagerly.** `ThumbManager.register` schedules
+a `mount + renderOne` via `setTimeout 0` so every card shows a static
+preview at load — you don't have to hover to reveal them. Ticking (live
+animation) still only happens while hovering, so idle CPU is unchanged.
+
+**Pulse effect on every Playground tool except Vinyl.** Composer already
+had it via its `SEGMENTS.effects` registry; Glyph picked it up by adding
+three missing effect flags to the composer-style picker; Waves / Dots /
+Particles / Halftone got a per-tool `Pulse` controls section + per-frame
+radial-Gaussian displacement (shader-side for Dots/Halftone, anchor-side
+for Waves, particle-velocity-side for Particles). Vinyl is raster-baked so
+the canvas effect doesn't fit.
+
+**Live-aspect canvases play nicely with all new tools.** Each new tool's
+update() resizes its offscreen canvas to match `window.MotionPlaygroundView`
+when the dropdown switches to 16:9, so glyphs aren't stretched on aspect
+changes. Particles' field-canvas was also widened (was hardcoded square
+FIELD_SIZE; now scales with aspect).
+
+**opentype.js wired into the SVG export.** Loaded async from CDN; a new
+`window.MotionFontTrace` global owns the font URL map (fontsource TTFs for
+Inter, Anton, Bebas Neue, Oswald, Roboto Condensed), a per-font cache, and
+a `glyphPath(font, ch, fs)` helper that returns the recentred true cubic
+Béziers as a `d`-string + bbox. Grid's `update()` pre-fetches the active
+font; its `toSvg` emits real opentype outlines when available, falling
+back to a marching-squares trace + midpoint-Bézier smooth for system
+fonts. Concentric's letters are wired the same way.
+
+**Per-tool SVG export quality matrix** (after the upgrade):
+
+| Tool        | SVG output | Notes |
+|---|---|---|
+| Composer    | Real polylines | Per-Line2 thickness preserved |
+| Glyph       | Real polylines + polygons | Same as Composer |
+| Vinyl       | Base64 image | Compositing-based, no vector |
+| Waves       | Real polylines | One per row |
+| Dots        | Real circles / rects / rings | Sampled from mask canvas |
+| Particles   | Real circles / polygons | InstancedMesh matrix walk |
+| Halftone    | Mixed circles / rings / images | Library mode embeds raster |
+| **Letter Warp** | `<defs>` source `<text>` + ~1830 `<clipPath>` + `<use>` | True vector for the warp tile grid |
+| **Word Snake** | Real per-letter `<text>` along spiral | Editable type in Illustrator/Figma |
+| **Grid**    | opentype outlines (`<path>`) for Inter/Anton/Bebas Neue/Oswald/Roboto Condensed | Falls back to marching-squares smoothed trace for system fonts |
+| **Concentric** | **No SVG export** — button greys out | See below |
+
+**Concentric SVG was removed after extensive trial.** First attempt
+emitted stroked `<text>` outlines — only one ring per letter. Second tried
+`<filter><feMorphology>` to dilate the letter silhouette per ring — works
+in browsers, but Figma silently strips filters. Third tried raster
+distance-transform + marching-squares-trace per ring — produced
+~3 MB files that still weren't great. Decided to drop the export. The
+toolbar SVG button greys out whenever the active tool's `toSvg` is
+missing OR its optional `canExportSvg(params)` returns false.
+
+**`canExportSvg(params)` hook** lets any tool conditionally enable the
+SVG button. Grid uses it to return true only when the active font has an
+opentype URL — system fonts (Helvetica, Arial, Georgia, Times, Courier,
+Impact, Verdana, Tahoma) make the button grey, since they'd fall back to
+the marching-squares trace which doesn't reach type-quality smoothness.
+Inter / Anton / Bebas Neue / Oswald / Roboto Condensed keep the button
+enabled. The greying machinery is centralised in `refreshExportSvgButton()`
+called from `selectAnimation`, every choice-control click handler, and
+the main loop tick (no-op when state unchanged).
+
+**Font controls expanded**:
+- **Lab font dropdown** got a second "Weight" dropdown next to it. Each
+  font carries a `weights: [{label, weight}]` array; default chosen via
+  `defaultWeightFor(entry)` (prefers 700, else heaviest). Rasterisers
+  read `recipe.subject.fontWeight` instead of hardcoding 900. The Google
+  Fonts `<link>` was expanded to load 400/500/700/900 for the multi-weight
+  faces; single-weight display faces (Bebas Neue, Anton, Archivo Black,
+  DM Serif Display) show a one-option disabled dropdown.
+- **Lab font dropdown** styled as a rounded white pill with a custom SVG
+  chevron (CSS `--stage-aspect` style siblings live nearby). The Knockout
+  font + embedded base64 face that was briefly added is gone.
+- **Font load race fixed**: changing fonts re-renders once
+  `document.fonts.load()` resolves, so the first selection doesn't measure
+  with the fallback face (the old bug: click twice to apply).
+
+**Per-font Vertical offset on Concentric AND Grid.** Different fonts have
+different cap-height vs. ascender ratios, so the same baseline math
+overflows the cell/canvas for tall-ascent fonts. Both tools got a
+`Vertical offset` slider (−0.5 to +0.5 in unit-height) and Grid also got
+a `Character size` slider (0.2× to 2×) that multiplies the auto-fit
+sx/sy. Applied identically on canvas and SVG export so what you see
+matches what you export.
+
+**Defaults updated per user spec** (`INITIAL_DEFAULTS`):
+- Letter Warp: text `Queen`, vertical offset −0.03, bg `#5B77FF`, letter `#F2E9D8`.
+- Word Snake: phrase `A8C` (max 12 chars), paper `#5B77FF`, inkInner + inkOuter `#F2E9D8`.
+- Grid: palette `#5B77FF / #EF3B2D / #000000 / #f0ff1f / #ffffff / #a5ee8b / #2205ff`.
+- Concentric: word `A8C`, bg + fontColor `#5b77ff`, ink + ringColor `#F2E9D8`.
+
+**Two TDZ hotfixes** at the end of the session unblocked the controls
+panel from going blank on first load:
+- `SECTION_OPEN_STATE` was declared with `const` near `buildControls`,
+  but the bootstrap's `selectAnimation` runs earlier in the IIFE and
+  reached buildControls in the const's TDZ → silent throw.
+- Same shape for `_lastSvgBtnOk` declared near `refreshExportSvgButton`.
+Both moved to the top of the Section 4 IIFE alongside the other state
+variables.
 
 ### 2026-05-20 micro-session
 
@@ -150,10 +272,10 @@ for the in-IDE preview, with `--directory` pointing at this folder.
 - **Pages** (top nav): `Landing` · `Playground` · `Lab`. Landing is now the
   default on first load. `Playground` is the renamed `Create` page; the
   internal page id is still `create` to avoid breaking saved state.
-- **Playground tools** (cards on the right): Composer · Glyph · Vinyl · Waves ·
-  Dots · Particles · Halftone (7 in total). Poles and Distortion were removed
-  this session — their IIFEs, `CATEGORY_ENTRIES`, and `HTML_EXPORT_SECTIONS`
-  entries are gone.
+- **Playground tools** (cards on the right, top-to-bottom): Grid ·
+  Concentric · Word Snake · Letter Warp · Composer · Glyph · Vinyl · Waves ·
+  Dots · Particles · Halftone (**11 in total**). The first four were added
+  in the 2026-05-26 session; Grid is the default on first load.
 - **Lab** is a separate top-level page with a fundamentally different
   architecture: layered subjects (text/SVG) + EFFECTS layers + global pixel
   post-processing. Every Lab fill / outline is now a **real triangulated
@@ -177,7 +299,11 @@ sections.
 | `// SECTION 3.47:` | **Particles** animation (internal id `gradient`). |
 | `// SECTION 3.48:` | **Halftone** animation. Wave effect + cursor attractor added this/prior session; cell coverage allows 0–200%. |
 | `// SECTION 3.5:` | **Composer** — segment registry (sources / primitives / effects) + composer animation. Each primitive now clones its `LineMaterial` per item so the line-thickness gradient can vary `linewidth` per anchor. Three new motion effects (`orbit`, `glitch`, `pulse`) live here; Mirror/Kaleidoscope was removed earlier in the session. |
-| `// SECTION 4:` | Main app — renderer, page nav, categories grid, `selectAnimation`, `buildControls` (with `hidden`-flagged controls + per-tool `defaultOpenSections`), mouse interactions, exports (JSON / PNG @ 1×/2×/3× / HTML with PAN/ZOOM gating), `buildSegmentPickers` (Composer + Glyph), shared overlay shaders (gradient / pixelate / halftone), and the **Lab module** (~3000 lines, an IIFE near the bottom of Section 4). |
+| `// SECTION 3.6:` | **Letter Warp** animation (2D canvas → CanvasTexture → fullscreen plane). |
+| `// SECTION 3.7:` | **Word Snake** animation (Archimedean spiral, drag-to-rotate via accumulated angular delta). |
+| `// SECTION 3.8:` | **Grid** animation. Hosts opentype.js helpers on `window.MotionFontTrace`; Concentric reuses them. Also declares `canExportSvg(p)` returning true only for fonts with `FONT_OT_URLS` entries. |
+| `// SECTION 3.9:` | **Concentric** animation. Canvas-side renders normally; SVG export is intentionally absent — toolbar SVG button greys out automatically. |
+| `// SECTION 4:` | Main app — renderer, page nav, categories grid, `selectAnimation`, `buildControls` (with `hidden`-flagged controls + per-tool `defaultOpenSections`), mouse interactions, exports (JSON / PNG @ 1×/2×/3× / HTML with PAN/ZOOM gating / **SVG** with `canExportSvg` greying), `buildSegmentPickers` (Composer + Glyph), shared overlay shaders (gradient / pixelate / halftone), `MotionSvgHelpers`, and the **Lab module** (~3000 lines, an IIFE near the bottom of Section 4). |
 
 Every Playground animation IIFE ends with `window.MotionAnimations.push({...})`.
 

@@ -12,7 +12,8 @@ on Three.js, no build step, no `npm install`. Everything lives in one
 
 Three pages share the same canvas and renderer:
 
-- **Landing** 
+- **Landing** — animated hero (211 small star outlines arranged along a big
+  star, with a cursor-thickening hover halo).
 - **Playground** — gallery of seven tunable animations, each with its own
   controls panel, the shared overlay pass (Gradient · Pixelate · Halftone),
   and full snapshot/HTML/PNG/SVG export.
@@ -21,10 +22,14 @@ Three pages share the same canvas and renderer:
   with a cascading motion + pixel pipeline, and a per-tool save-to-Playground
   flow.
 
-### Playground tools
+### Playground tools (11 total)
 
 | Tool | What it is |
 |---|---|
+| **Grid** | Word tiles across rows × cols with cells expanding around a 2D Gaussian peak under the cursor. Per-cell palette + non-uniform letter stretch. Default tool on load. |
+| **Concentric** | Word rendered as nested ring outlines via `destination-out` compositing; pulse modulates ring radii. |
+| **Word Snake** | A phrase walks along an Archimedean spiral with arc-length-correct letter spacing. Drag to rotate. |
+| **Letter Warp** | A letterform tiled into a grid where each tile samples from a sine-wave offset. Cursor adds a Gaussian amplitude bump. |
 | **Composer** | Recipe-driven: pick a Source (Circle, Lissajous, Grid, or uploaded SVG), one or more Primitives (round-robin), and a chain of motion Effects. Per-instance line-thickness gradient included. |
 | **Glyph** | Animated shapes traveling along Hershey-font letterform paths. Includes Composer-style Primitive + Effects pickers as a sub-recipe in the middle column. |
 | **Vinyl** | Text mask sliced into concentric ring grooves with per-segment Perlin rotation. |
@@ -32,6 +37,11 @@ Three pages share the same canvas and renderer:
 | **Dots** | Bitmap-style dot grid that morphs between text frames. Three-color palette (background / foreground / off cells). |
 | **Particles** | Field-driven particle system with halftone-style attraction and repulsion. |
 | **Halftone** | Bayer-dithered halftone over text / SVG / solid / shift-click point cloud. Includes a wave animation + cursor halo. |
+
+Every tool has Pulse effect controls (except Vinyl). All tools respect
+the 1:1 / 16:9 aspect-ratio dropdown, the Scene scale slider, and the
+shared overlay pass (Gradient / Pixelate / Halftone). Gallery thumbnails
+render a static preview on load — no hover required.
 
 ### Lab features
 
@@ -62,7 +72,7 @@ Three pages share the same canvas and renderer:
 |---|---|
 | **JSON** | Lossless snapshot. v2 schema with layers, effects, transparent flag, inlined SVG assets. |
 | **PNG** | Oversampled to 2048² (×1), 4096² (×2), or 6144² (×3). Honors the Transparent toggle. |
-| **SVG** | Real vector elements. Lab emits polylines, circles, `<path fill-rule="evenodd">` for deformed meshes, etc. Playground tools emit per-tool vector output (polylines for Composer / Glyph / Waves; circles / rects / rings for Dots / Particles / Halftone; Vinyl embeds its composed ring canvas as `<image>`). Pixel-space overlays are dropped on SVG export — use PNG for those. |
+| **SVG** | Real vector elements. Lab emits polylines, circles, `<path fill-rule="evenodd">` for deformed meshes, etc. Playground tools emit per-tool vector output (polylines for Composer / Glyph / Waves / Word Snake; circles / rects / rings for Dots / Particles / Halftone; per-glyph `<use>` of opentype outlines for Grid when the active font has a TTF — Inter / Anton / Bebas Neue / Oswald / Roboto Condensed; clipped tile `<use>` for Letter Warp; Vinyl embeds its composed ring canvas as `<image>`). The SVG button greys out when an active tool can't produce a clean vector — Concentric always, Grid on system fonts. Pixel-space overlays are dropped on SVG export — use PNG for those. |
 | **HTML** | Self-contained `.html` with Three.js + Line2 from CDN, the animation's IIFE inlined, baked params, and optional PAN / ZOOM interaction (per-export checkboxes). |
 
 ## Run
