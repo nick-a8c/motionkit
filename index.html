@@ -6412,6 +6412,11 @@
           { value: 0, label: 'Black' }, { value: 1, label: 'Bold' }, { value: 2, label: 'Regular' }
       ] },
       { key: 'font',       label: 'Font', type: 'choices', value: 0, choices: FONT_NAMES.map((n,i)=>({value:i,label:n})) },
+      // Per-font vertical nudge — fonts differ in intrinsic cap height vs.
+      // ascender height, so the same baseline math can overflow the cell for
+      // some (Anton, Roboto Condensed). Range in cell-height units; negative
+      // pushes glyphs upward, positive pushes them downward.
+      { key: 'vertOffset', label: 'Vertical offset', min: -0.5, max: 0.5, step: 0.01, value: 0 },
       { section: 'Style' },
       { key: 'bgColor',    label: 'Background',     type: 'color', value: '#000000' },
       { key: 'ink',        label: 'Ink (light bg)', type: 'color', value: '#000000' },
@@ -6556,7 +6561,11 @@
           ctx.fillRect(x, y, w2 + 1, h + 1);
           ctx.save();
           const pad = 0.02 * Math.min(w2,h);
-          ctx.translate(x + w2*0.5, y + h*0.55);
+          // Per-font vertical nudge (cell-height units). Lets the user
+          // compensate for fonts whose intrinsic ascender pushes the glyph
+          // out of the cell at the default baseline.
+          const vOff = h * (p.vertOffset || 0);
+          ctx.translate(x + w2*0.5, y + h*0.55 + vOff);
           const fs = 200;
           ctx.font = fontWeight + ' ' + fs + 'px ' + fontFamily;
           const mw = ctx.measureText(ch).width || fs*0.5;
@@ -6833,7 +6842,9 @@
           const tInfo = traced[ch];
           const sx2 = (w2 - pad*2) / tInfo.bbox.w;
           const sy2 = (h - pad*2) / tInfo.bbox.h;
-          const cxp = x + w2*0.5, cyp = y + h*0.5;
+          // Mirror the canvas's vertical offset (h * p.vertOffset) so the
+          // exported SVG matches what you see on screen.
+          const cxp = x + w2*0.5, cyp = y + h*0.5 + h*((p && p.vertOffset) || 0);
           out.push(
             '<g transform="translate(' + fmt(cxp) + ' ' + fmt(cyp) +
             ') scale(' + fmt(sx2) + ' ' + fmt(sy2) + ')" fill="' + ink + '">' +
