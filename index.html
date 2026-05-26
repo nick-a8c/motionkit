@@ -6576,6 +6576,14 @@
       state.texture.needsUpdate = true;
     },
 
+    // Disable the SVG button unless the chosen font has true opentype outlines
+    // available — the marching-squares fallback for system fonts produces
+    // blocky paths the user doesn't want exported.
+    canExportSvg(p){
+      const name = FONT_NAMES[(p && p.font|0) || 0];
+      return !!(window.MotionFontTrace && window.MotionFontTrace.FONT_OT_URLS && window.MotionFontTrace.FONT_OT_URLS[name]);
+    },
+
     toSvg(state, p){
       const H = window.MotionSvgHelpers;
       if (!state || !state.canvas) return [];
@@ -6875,6 +6883,11 @@
           { value: 0, label: '400' }, { value: 1, label: '700' }, { value: 2, label: '900' }
       ] },
       { key: 'letterSpacing', label: 'Letter spacing', min: -20, max: 80, step: 1, value: 8 },
+      // Per-font vertical nudge — fonts have different intrinsic ascender
+      // heights (Anton, Roboto have tall ascents that overflow when the
+      // baseline math assumes a Helvetica-like x-height). Negative pushes
+      // the glyph upward; positive pushes it downward, in fontSize units.
+      { key: 'vertOffset',    label: 'Vertical offset', min: -0.5, max: 0.5, step: 0.01, value: 0 },
       { key: 'font',          label: 'Font', type: 'choices', value: 0, choices: FONT_NAMES.map((n,i)=>({value:i,label:n})) },
       { section: 'Style' },
       { key: 'bgColor',   label: 'Background', type: 'color', value: '#F2EFEF' },
@@ -6968,7 +6981,9 @@
         const ls = p.letterSpacing;
         totalW += ls * (word.length - 1);
         const startX = (W - totalW) / 2;
-        const midY = H / 2;
+        // Apply the user-controlled vertical nudge (in fontSize units) so
+        // tall-ascent fonts can be re-centred manually.
+        const midY = H / 2 + fontSize * (p.vertOffset || 0);
         let x = startX;
         c.lineJoin = 'round'; c.lineCap = 'round';
         const col = color || '#000';
@@ -7253,6 +7268,12 @@
   let startT = performance.now();
   let pausedAccum = 0;
   let pauseStart = 0;
+  // In-session memory of which controls-panel sections the user has expanded
+  // or collapsed in each tool. Declared here (not next to buildControls
+  // further down) because the bootstrap calls selectAnimation → buildControls
+  // before that later declaration would have initialised — accessing a const
+  // in its TDZ throws and silently kills page setup.
+  const SECTION_OPEN_STATE = {};
 
   // Track latest pixel size — Line2 materials need their resolution
   // synced for thickness to render correctly.
@@ -12525,11 +12546,8 @@ function renderHalftone(data){
     host.appendChild(row);
   }
 
-  // In-session memory of which sections the user has expanded/collapsed in
-  // each tool's slider panel. Keyed by anim.id → { [sectionName]: boolean }
-  // where true = open. Re-applied on tool re-entry so switching tools
-  // doesn't reset the user's interactions back to defaultOpenSections.
-  const SECTION_OPEN_STATE = {};
+  // SECTION_OPEN_STATE moved to the top of this IIFE for TDZ safety — see
+  // the "State variables" block near line 7263.
 
   function buildControls(anim){
     const controlsHost = getActiveControlsHost();
@@ -12777,7 +12795,7 @@ function renderHalftone(data){
           btn.className = 'picker-option';
           btn.textContent = ch.label;
           btn._value = ch.value;
-          btn.addEventListener('click', () => { params[c.key] = ch.value; refresh(); });
+          btn.addEventListener('click', () => { params[c.key] = ch.value; refresh(); refreshExportSvgButton(); });
           buttons.push(btn);
           opts.appendChild(btn);
         });
@@ -12811,6 +12829,33 @@ function renderHalftone(data){
       row.appendChild(top);
       row.appendChild(input);
       appendRow(row);
+    });
+  }
+
+  // Greys out the Export-SVG toolbar button when the active animation can't
+  // produce a real vector export — either it doesn't declare toSvg at all
+  // (Concentric) or its toSvg falls back to a rasterised path for the
+  // currently-chosen font (e.g. Grid on a system font without a fontsource
+  // TTF, where the marching-squares trace can't reach type-quality smoothness).
+  // Each anim can declare `canExportSvg(params)` to override the default.
+  let _lastSvgBtnOk = null;
+  function refreshExportSvgButton(){
+    if (!currentAnim) return;
+    let ok = typeof currentAnim.toSvg === 'function';
+    if (ok && typeof currentAnim.canExportSvg === 'function'){
+      try {
+        const params = ANIM_STATE[currentAnim.id] && ANIM_STATE[currentAnim.id].params;
+        ok = !!currentAnim.canExportSvg(params || {});
+      } catch(e){ /* fail open */ }
+    }
+    if (ok === _lastSvgBtnOk) return;  // no-op if unchanged
+    _lastSvgBtnOk = ok;
+    document.querySelectorAll('[data-act="export-svg"]').forEach(btn => {
+      btn.disabled = !ok;
+      btn.style.opacity = ok ? '' : '0.4';
+      btn.style.cursor  = ok ? '' : 'not-allowed';
+      btn.title = ok ? 'Export the current frame as a vector SVG'
+                     : 'SVG export not available — pick a font with smooth outline support.';
     });
   }
 
@@ -12855,17 +12900,8 @@ function renderHalftone(data){
     buildControls(currentAnim);
     buildMetaControls(currentAnim);
 
-    // Grey out the Export-SVG toolbar button if the active animation didn't
-    // declare a toSvg method (the handler also alerts on click, but disabling
-    // the button is a friendlier signal that it isn't available here).
-    document.querySelectorAll('[data-act="export-svg"]').forEach(btn => {
-      const ok = !!(currentAnim && typeof currentAnim.toSvg === 'function');
-      btn.disabled = !ok;
-      btn.style.opacity = ok ? '' : '0.4';
-      btn.style.cursor  = ok ? '' : 'not-allowed';
-      btn.title = ok ? 'Export the current frame as a vector SVG'
-                     : 'SVG export not available for this tool';
-    });
+    _lastSvgBtnOk = null;  // force re-evaluation on tool switch
+    refreshExportSvgButton();
 
     // Show segment pickers for recipe-driven anims (composer + glyph); clear
     // for everything else.
@@ -14102,6 +14138,8 @@ ${bodyScripts}
         }
       }
       currentAnim.update(t, params, currentState);
+      // Cheap when nothing changed (early-return inside).
+      refreshExportSvgButton();
     }
     if (window.__renderWithOverlays && currentAnim){
       window.__renderWithOverlays(ANIM_STATE[currentAnim.id].params);
