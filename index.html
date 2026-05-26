@@ -5936,7 +5936,7 @@
       defs.push(
         '<text id="' + idPrefix + '-src"' +
         ' x="' + fmt(W/2) + '" y="' + fmt(baselineY) + '"' +
-        ' font-family=' + JSON.stringify(fontStack) +
+        " font-family='" + fontStack.replace(/'/g, "&apos;") + "'" +
         ' font-weight="900"' +
         ' font-size="' + fmt(size) + '"' +
         ' text-anchor="middle" dominant-baseline="middle"' +
@@ -6290,7 +6290,7 @@
                 '<text x="' + fmt(xp) + '" y="' + fmt(yp) +
                 '" fill="' + color + '"' +
                 (alpha < 0.999 ? ' fill-opacity="' + fmt(alpha) + '"' : '') +
-                ' font-family=' + JSON.stringify(stack) +
+                " font-family='" + stack.replace(/'/g, "&apos;") + "'" +
                 ' font-weight="' + weight + '"' +
                 ' font-size="' + fmt(fontSize) + '"' +
                 ' text-anchor="middle" dominant-baseline="middle"' +
@@ -6588,7 +6588,7 @@
           const cxp = x + w2*0.5, cyp = y + h*0.55;
           out.push(
             '<text x="0" y="0" fill="' + ink + '"' +
-            ' font-family=' + JSON.stringify(fontFamily) +
+            " font-family='" + fontFamily.replace(/'/g, "&apos;") + "'" +
             ' font-weight="' + fontWeight + '"' +
             ' font-size="' + fs + '"' +
             ' text-anchor="middle" dominant-baseline="middle"' +
@@ -6831,7 +6831,7 @@
           // 'middle' matches textBaseline='middle'.
           parts.push(
             '<text x="' + fmt(x + dx) + '" y="' + fmt(midY + dy) + '"' +
-            ' font-family=' + JSON.stringify(fontStack) +
+            " font-family='" + fontStack.replace(/'/g, "&apos;") + "'" +
             ' font-weight="' + weight + '"' +
             ' font-size="' + fmt(fontSize) + '"' +
             ' text-anchor="start" dominant-baseline="middle"' +
@@ -7369,6 +7369,7 @@
       color7: '#2205ff',
     },
     concentric: {
+      word:      'A8C',
       bgColor:   '#5b77ff',
       fontColor: '#5b77ff',
       ink:       '#F2E9D8',
