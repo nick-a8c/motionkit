@@ -6343,6 +6343,8 @@
     controls: [
       { section: 'Source' },
       { key: 'sceneScale', label: 'Scene scale', min: 0.1, max: 2.0, step: 0.01, value: 1 },
+      { key: 'textScale',  label: 'Text scale', min: 0.1, max: 2.0, step: 0.01, value: 1 },
+      { key: 'fontSize',   label: 'Font size',  min: 40, max: 800, step: 1, value: 400 },
       { key: 'word',          label: 'Word', type: 'text', value: 'MEXICO' },
       { key: 'fontWeight',    label: 'Font weight', type: 'choices', value: 2, choices: [
           { value: 0, label: '400' }, { value: 1, label: '700' }, { value: 2, label: '900' }
@@ -6351,6 +6353,7 @@
       { key: 'font',          label: 'Font', type: 'choices', value: 0, choices: FONT_NAMES.map((n,i)=>({value:i,label:n})) },
       { section: 'Style' },
       { key: 'bgColor',   label: 'Background', type: 'color', value: '#F2EFEF' },
+      { key: 'fontColor', label: 'Font color', type: 'color', value: '#5b77ff' },
       { key: 'ink',       label: 'Ink',        type: 'color', value: '#000000' },
       { key: 'ringColor', label: 'Ring color', type: 'color', value: '#000000' },
       { key: 'rings',     label: 'Ring count',     min: 4, max: 60, step: 1, value: 31 },
@@ -6416,7 +6419,8 @@
       function drawTextSilhouette(c, lineWidth, offsetX, offsetY){
         c.save();
         c.translate(offsetX || 0, offsetY || 0);
-        const fontSize = 0.36 * H;
+        const fontSize = (p.fontSize != null ? p.fontSize : 400) *
+                         (p.textScale != null ? p.textScale : 1);
         const word = (p.word || ' ').toUpperCase();
         c.font = weight + ' ' + fontSize + 'px ' + fontStack;
         c.textBaseline = 'middle';
@@ -6467,7 +6471,9 @@
           mctx.fillRect(0, 0, W, H);
           mctx.globalCompositeOperation = 'source-over';
           ctx.drawImage(state.mask, 0, 0, W, H);
-          ctx.fillStyle = p.ink;
+          // Solid letterform painted on top of the central ring — this is
+          // the "font color" the user controls separately from the rings.
+          ctx.fillStyle = (p.fontColor != null ? p.fontColor : p.ink);
           drawTextSilhouette(ctx, 0, 0, 0);
           continue;
         }
@@ -6969,6 +6975,12 @@
       color6: '#a5ee8b',
       color7: '#2205ff',
     },
+    concentric: {
+      bgColor:   '#5b77ff',
+      fontColor: '#5b77ff',
+      ink:       '#F2E9D8',
+      ringColor: '#F2E9D8',
+    },
   };
   ANIMATIONS.forEach(anim => {
     const overrides = INITIAL_DEFAULTS[anim.id];
@@ -7327,6 +7339,10 @@
   // 'placeholder' entries are visual stubs for animations we haven't built
   // yet — they render a label and are not clickable.
   const CATEGORY_ENTRIES = [
+    { animId: 'grid'        },
+    { animId: 'concentric'  },
+    { animId: 'word-snake'  },
+    { animId: 'letter-warp' },
     { animId: 'composer' },
     { animId: 'glyph'    },
     { animId: 'vinyl'    },
@@ -7334,10 +7350,6 @@
     { animId: 'dots'     },
     { animId: 'gradient' },
     { animId: 'halftone' },
-    { animId: 'letter-warp' },
-    { animId: 'word-snake'  },
-    { animId: 'grid'        },
-    { animId: 'concentric'  },
   ];
 
   const ThumbManager = {
