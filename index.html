@@ -6555,7 +6555,131 @@
       const fs = 200;
       meas.font = fontWeight + ' ' + fs + 'px ' + fontFamily;
 
+      // ---- Trace each unique glyph to a vector path so the non-uniform
+      // ---- stretch survives in any SVG viewer (textLength stretching is
+      // ---- renderer-dependent; baked path vertices aren't).
+      // Each letter is rasterized once at high res, marching-squares pulls
+      // the contour out, and the resulting <path> is emitted in <defs>.
+      // Then every cell instances it via <use> with a per-cell translate +
+      // non-uniform scale to fit.
+      function traceLetter(ch){
+        const PAD = 24;
+        const TFS = 240;                       // trace font size (px)
+        const RW = 360, RH = 360;              // raster canvas — big enough to fit any single glyph + pad
+        const rc = document.createElement('canvas');
+        rc.width = RW; rc.height = RH;
+        const rctx = rc.getContext('2d');
+        rctx.fillStyle = '#000'; rctx.fillRect(0, 0, RW, RH);  // black bg
+        rctx.fillStyle = '#fff';
+        rctx.textAlign = 'center'; rctx.textBaseline = 'middle';
+        rctx.font = fontWeight + ' ' + TFS + 'px ' + fontFamily;
+        rctx.fillText(ch, RW/2, RH/2);
+        const img = rctx.getImageData(0, 0, RW, RH).data;
+        const mask = new Uint8Array(RW * RH);
+        for (let i = 0, j = 0; j < img.length; j += 4, i++) mask[i] = img[j] > 127 ? 1 : 0;
+
+        // Marching squares — same algorithm as Lab's `marchingSquares`, inlined
+        // here so we don't depend on its IIFE scope.
+        const segs = [];
+        function v(x, y){ return (x < 0 || y < 0 || x >= RW || y >= RH) ? 0 : mask[y * RW + x]; }
+        for (let yy = -1; yy < RH; yy++){
+          for (let xx = -1; xx < RW; xx++){
+            const c1 = v(xx,     yy + 1);
+            const c2 = v(xx + 1, yy + 1);
+            const c3 = v(xx + 1, yy);
+            const c4 = v(xx,     yy);
+            const idx = c1 | (c2 << 1) | (c3 << 2) | (c4 << 3);
+            if (idx === 0 || idx === 15) continue;
+            const eT = xx + 0.5, eTy = yy;
+            const eR = xx + 1,   eRy = yy + 0.5;
+            const eB = xx + 0.5, eBy = yy + 1;
+            const eL = xx,       eLy = yy + 0.5;
+            switch (idx){
+              case 1:  segs.push(eL,eLy,eB,eBy); break;
+              case 2:  segs.push(eB,eBy,eR,eRy); break;
+              case 3:  segs.push(eL,eLy,eR,eRy); break;
+              case 4:  segs.push(eR,eRy,eT,eTy); break;
+              case 5:  segs.push(eL,eLy,eT,eTy); segs.push(eR,eRy,eB,eBy); break;
+              case 6:  segs.push(eB,eBy,eT,eTy); break;
+              case 7:  segs.push(eL,eLy,eT,eTy); break;
+              case 8:  segs.push(eT,eTy,eL,eLy); break;
+              case 9:  segs.push(eT,eTy,eB,eBy); break;
+              case 10: segs.push(eT,eTy,eR,eRy); segs.push(eB,eBy,eL,eLy); break;
+              case 11: segs.push(eT,eTy,eR,eRy); break;
+              case 12: segs.push(eR,eRy,eL,eLy); break;
+              case 13: segs.push(eR,eRy,eB,eBy); break;
+              case 14: segs.push(eB,eBy,eL,eLy); break;
+            }
+          }
+        }
+        if (segs.length === 0) return { d: '', bbox: { x:0, y:0, w:1, h:1 } };
+
+        // Thread segments into closed contours.
+        const Q = 1e4;
+        function key(x, y){ return Math.round(x * Q) + ',' + Math.round(y * Q); }
+        const startMap = new Map();
+        const used = new Uint8Array(segs.length / 4);
+        for (let i = 0; i < segs.length; i += 4){
+          const k = key(segs[i], segs[i + 1]);
+          if (!startMap.has(k)) startMap.set(k, []);
+          startMap.get(k).push(i / 4);
+        }
+        const contours = [];
+        for (let i = 0; i < segs.length; i += 4){
+          if (used[i / 4]) continue;
+          const path = [];
+          let cur = i / 4;
+          while (cur !== -1 && !used[cur]){
+            used[cur] = 1;
+            const off = cur * 4;
+            path.push(segs[off], segs[off + 1]);
+            const nk = key(segs[off + 2], segs[off + 3]);
+            const cands = startMap.get(nk) || [];
+            let next = -1;
+            for (const c of cands){ if (!used[c]){ next = c; break; } }
+            cur = next;
+          }
+          if (path.length >= 6) contours.push(path);
+        }
+
+        // Compute bbox + emit path d in pixel space first.
+        let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+        for (const c of contours){
+          for (let i = 0; i < c.length; i += 2){
+            if (c[i]   < minX) minX = c[i];
+            if (c[i]   > maxX) maxX = c[i];
+            if (c[i+1] < minY) minY = c[i+1];
+            if (c[i+1] > maxY) maxY = c[i+1];
+          }
+        }
+        const bw = Math.max(1, maxX - minX), bh = Math.max(1, maxY - minY);
+        const cx = (minX + maxX) / 2, cy = (minY + maxY) / 2;
+        // Shift so the glyph bbox is centred at (0,0). That way the SVG
+        // <g transform="translate(cellCx cellCy) scale(sx sy)"> wrap below
+        // places the glyph centre exactly at the cell centre after stretch.
+        let d = '';
+        for (const c of contours){
+          d += 'M';
+          for (let i = 0; i < c.length; i += 2){
+            const px = c[i] - cx, py = c[i + 1] - cy;
+            d += (i === 0 ? '' : 'L') + fmt(px) + ' ' + fmt(py) + ' ';
+          }
+          d += 'Z ';
+        }
+        return { d: d.trim(), bbox: { w: bw, h: bh } };
+      }
+      const traced = {};
+      letters.forEach(ch => { if (!(ch in traced)) traced[ch] = traceLetter(ch); });
+
       const out = [];
+      // Emit a <defs> with one <path> per unique character. Cells reference
+      // these by id via <use>, so repeated letters across rows/cells are free.
+      out.push('<defs>');
+      const slug = ch => 'gl-' + ch.charCodeAt(0).toString(36);
+      Object.keys(traced).forEach(ch => {
+        out.push('<path id="' + slug(ch) + '" d="' + traced[ch].d + '" fill-rule="evenodd"/>');
+      });
+      out.push('</defs>');
       if (sc !== 1) out.push('<g transform="translate(' + fmt(H.SIZE/2) + ' ' + fmt(H.SIZE/2) +
                              ') scale(' + fmt(sc) + ') translate(' + fmt(-H.SIZE/2) + ' ' + fmt(-H.SIZE/2) + ')">');
       out.push('<g transform="translate(' + fmt(offX) + ' ' + fmt(offY) + ') scale(' + fmt(s) + ')">');
@@ -6579,23 +6703,18 @@
           const hex = cellBg.replace('#','');
           const br = (parseInt(hex.slice(0,2),16) + parseInt(hex.slice(2,4),16) + parseInt(hex.slice(4,6),16))/3;
           const ink = (br > 160) ? p.ink : p.inkDark;
-          // Force the glyph to span the cell horizontally (textLength +
-          // lengthAdjust="spacingAndGlyphs" is far more reliable across SVG
-          // renderers than non-uniform scale() + dominant-baseline). Use
-          // dy="0.35em" to put the visual middle of cap glyphs at y=0.
+          // Place the traced glyph: <use> the per-character path, scaled
+          // non-uniformly to fill the cell (minus padding). Because the path
+          // is real geometry, the stretch is identical in any SVG viewer.
           const pad = 0.02 * Math.min(w2, h);
-          const vfs = (h - pad*2) / 0.78;                  // effective vertical font size
-          const tlen = Math.max(1, w2 - pad*2);            // forced glyph extent
-          const cxp = x + w2*0.5, cyp = y + h*0.55;
+          const tInfo = traced[ch];
+          const sx2 = (w2 - pad*2) / tInfo.bbox.w;
+          const sy2 = (h - pad*2) / tInfo.bbox.h;
+          const cxp = x + w2*0.5, cyp = y + h*0.5;
           out.push(
-            '<text x="' + fmt(cxp) + '" y="' + fmt(cyp) + '"' +
-            ' fill="' + ink + '"' +
-            " font-family='" + fontFamily.replace(/'/g, "&apos;") + "'" +
-            ' font-weight="' + fontWeight + '"' +
-            ' font-size="' + fmt(vfs) + '"' +
-            ' textLength="' + fmt(tlen) + '" lengthAdjust="spacingAndGlyphs"' +
-            ' text-anchor="middle" dy="0.35em">' +
-            esc(ch) + '</text>'
+            '<g transform="translate(' + fmt(cxp) + ' ' + fmt(cyp) +
+            ') scale(' + fmt(sx2) + ' ' + fmt(sy2) + ')" fill="' + ink + '">' +
+            '<use href="#' + slug(ch) + '"/></g>'
           );
           x += w2;
         }
