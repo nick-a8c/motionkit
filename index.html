@@ -6343,27 +6343,57 @@
   // opentype.js TTF URLs for the fonts where we can grab the true outlines
   // (fontsource hosts TTF for every Google Fonts family). System fonts
   // (Helvetica/Georgia/etc.) are absent → Grid falls back to the traced
-  // marching-squares path for those.
-  const FONT_OT_URLS = {
-    'Inter':            'https://cdn.jsdelivr.net/fontsource/fonts/inter@latest/latin-900-normal.ttf',
-    'Roboto Condensed': 'https://cdn.jsdelivr.net/fontsource/fonts/roboto-condensed@latest/latin-700-normal.ttf',
-    'Anton':            'https://cdn.jsdelivr.net/fontsource/fonts/anton@latest/latin-400-normal.ttf',
-    'Bebas Neue':       'https://cdn.jsdelivr.net/fontsource/fonts/bebas-neue@latest/latin-400-normal.ttf',
-    'Oswald':           'https://cdn.jsdelivr.net/fontsource/fonts/oswald@latest/latin-700-normal.ttf',
-  };
-  const _otFontCache = {};
-  const _otFontPending = {};
-  function loadOpentypeFont(name){
-    if (_otFontCache[name]) return Promise.resolve(_otFontCache[name]);
-    if (_otFontPending[name]) return _otFontPending[name];
-    const url = FONT_OT_URLS[name];
-    if (!url || typeof window.opentype === 'undefined') return Promise.resolve(null);
-    const p = fetch(url)
-      .then(r => r.arrayBuffer())
-      .then(buf => { const f = window.opentype.parse(buf); _otFontCache[name] = f; return f; })
-      .catch(() => null);
-    _otFontPending[name] = p;
-    return p;
+  // marching-squares path for those. Hoisted to window.MotionFontTrace so
+  // Concentric (and any other tool) can reuse the same cache + helpers.
+  if (!window.MotionFontTrace){
+    window.MotionFontTrace = {
+      FONT_OT_URLS: {
+        'Inter':            'https://cdn.jsdelivr.net/fontsource/fonts/inter@latest/latin-900-normal.ttf',
+        'Roboto Condensed': 'https://cdn.jsdelivr.net/fontsource/fonts/roboto-condensed@latest/latin-700-normal.ttf',
+        'Anton':            'https://cdn.jsdelivr.net/fontsource/fonts/anton@latest/latin-400-normal.ttf',
+        'Bebas Neue':       'https://cdn.jsdelivr.net/fontsource/fonts/bebas-neue@latest/latin-400-normal.ttf',
+        'Oswald':           'https://cdn.jsdelivr.net/fontsource/fonts/oswald@latest/latin-700-normal.ttf',
+      },
+      cache: {},
+      pending: {},
+      load(name){
+        if (this.cache[name]) return Promise.resolve(this.cache[name]);
+        if (this.pending[name]) return this.pending[name];
+        const url = this.FONT_OT_URLS[name];
+        if (!url || typeof window.opentype === 'undefined') return Promise.resolve(null);
+        const self = this;
+        const p = fetch(url).then(r => r.arrayBuffer()).then(buf => {
+          const f = window.opentype.parse(buf);
+          self.cache[name] = f;
+          return f;
+        }).catch(() => null);
+        this.pending[name] = p;
+        return p;
+      },
+      // Given a font and a character, return a smooth SVG path d-string for
+      // the glyph at the given font size, recentred so its bbox center is at
+      // (0,0). Returns { d, bbox: {w, h} } or null on failure.
+      glyphPath(font, ch, fs){
+        if (!font) return null;
+        try {
+          const glyph = font.charToGlyph(ch);
+          const path = glyph.getPath(0, 0, fs);
+          const bb = path.getBoundingBox();
+          if (!isFinite(bb.x1) || bb.x2 <= bb.x1) return null;
+          const cx = (bb.x1 + bb.x2) / 2, cy = (bb.y1 + bb.y2) / 2;
+          const fmt = (window.MotionSvgHelpers && window.MotionSvgHelpers.fmt) || (n => +n.toFixed(2));
+          let d = '';
+          for (const c of path.commands){
+            if (c.type === 'M')       d += 'M' + fmt(c.x-cx) + ' ' + fmt(c.y-cy) + ' ';
+            else if (c.type === 'L')  d += 'L' + fmt(c.x-cx) + ' ' + fmt(c.y-cy) + ' ';
+            else if (c.type === 'C')  d += 'C' + fmt(c.x1-cx) + ' ' + fmt(c.y1-cy) + ' ' + fmt(c.x2-cx) + ' ' + fmt(c.y2-cy) + ' ' + fmt(c.x-cx) + ' ' + fmt(c.y-cy) + ' ';
+            else if (c.type === 'Q')  d += 'Q' + fmt(c.x1-cx) + ' ' + fmt(c.y1-cy) + ' ' + fmt(c.x-cx) + ' ' + fmt(c.y-cy) + ' ';
+            else if (c.type === 'Z')  d += 'Z ';
+          }
+          return { d: d.trim(), bbox: { w: bb.x2 - bb.x1, h: bb.y2 - bb.y1 } };
+        } catch(e){ return null; }
+      },
+    };
   }
 
   function gauss(d, sigma){ return Math.exp(-(d*d)/(2*sigma*sigma)); }
@@ -6453,7 +6483,7 @@
       // emit true cubic-Bézier outlines instead of a marching-squares trace.
       // Fire-and-forget; export falls back to trace if the fetch isn't done.
       const _ofName = FONT_NAMES[p.font|0];
-      if (FONT_OT_URLS[_ofName] && !_otFontCache[_ofName]) loadOpentypeFont(_ofName);
+      if (window.MotionFontTrace.FONT_OT_URLS[_ofName] && !window.MotionFontTrace.cache[_ofName]) window.MotionFontTrace.load(_ofName);
       const W = v.w, H = v.h, ctx = state.ctx;
       const now = performance.now();
       const localT = p.animEnabled ? (now - state.t0) * 0.001 : 0;
@@ -6723,7 +6753,7 @@
       // Returns null if opentype isn't available for this font yet, in which
       // case we fall through to the trace.
       const activeFontName = FONT_NAMES[p.font|0];
-      const otFont = _otFontCache[activeFontName] || null;
+      const otFont = window.MotionFontTrace.cache[activeFontName] || null;
       function otGlyphPath(ch){
         if (!otFont) return null;
         try {
@@ -6827,7 +6857,7 @@
     return { w: 1100, h: 1100 };
   }
 
-  const FONT_NAMES = ['Helvetica','Arial','Roboto Condensed','Georgia','Times','Courier','Impact','Verdana','Tahoma'];
+  const FONT_NAMES = ['Inter','Helvetica','Arial','Roboto Condensed','Anton','Bebas Neue','Oswald','Georgia','Times','Courier','Impact','Verdana','Tahoma'];
 
   window.MotionAnimations.push({
     id: 'concentric',
@@ -6899,6 +6929,12 @@
         state.mesh.geometry.dispose();
         state.mesh.geometry = new THREE.PlaneGeometry(v.w, v.h);
         state.lastW = v.w; state.lastH = v.h;
+      }
+      // Pre-warm the opentype font for the active selection so SVG export can
+      // emit true glyph outlines for the feMorphology ring filter.
+      const _ofName = FONT_NAMES[p.font|0];
+      if (window.MotionFontTrace && window.MotionFontTrace.FONT_OT_URLS[_ofName] && !window.MotionFontTrace.cache[_ofName]) {
+        window.MotionFontTrace.load(_ofName);
       }
       const W = v.w, H = v.h, ctx = state.ctx, mctx = state.mctx;
       const now = performance.now();
@@ -7007,9 +7043,14 @@
       const fontSize = (p.fontSize != null ? p.fontSize : 400) *
                        (p.textScale != null ? p.textScale : 1);
       const word = ((p.word || ' ') + '').toUpperCase();
+      if (word.length === 0) return [];
       const ls = +p.letterSpacing;
 
-      // Measure widths the same way the canvas does.
+      // Resolve the active opentype font (may be null if it's a system font
+      // or the fetch hasn't completed yet — we fall back to <text> below).
+      const otFont = (window.MotionFontTrace && window.MotionFontTrace.cache[fontName]) || null;
+
+      // Measure widths the same way the canvas does so positions match.
       const meas = document.createElement('canvas').getContext('2d');
       meas.font = weight + ' ' + fontSize + 'px ' + fontStack;
       const widths = [];
@@ -7030,29 +7071,37 @@
       const pxo = pt ? (pt.x - 0.5) * 16 : 0;
       const pyo = pt ? (pt.y - 0.5) * 16 : 0;
 
-      // Per-letter painter: emits one <text> per glyph at the correct x.
-      function emitWord(stroke, strokeWidth, fill, dx, dy, alphaAttr){
-        const parts = [];
+      // Build one reusable letter-shape group at canvas coordinates. If the
+      // opentype font is available we emit <path d=...> per glyph (centred
+      // bboxes, so we offset each path to its letter position). Otherwise
+      // we fall back to <text> elements — fill colour doesn't matter, the
+      // ring filter floods over them.
+      const lettersId = 'cn-letters-' + Math.floor(Math.random() * 1e9).toString(36);
+      const letterParts = [];
+      {
         let x = startX;
         for (let i=0; i<word.length; i++){
           const ch = word.charAt(i);
-          // textAnchor=start matches the canvas textAlign='left'; baseline
-          // 'middle' matches textBaseline='middle'.
-          parts.push(
-            '<text x="' + fmt(x + dx) + '" y="' + fmt(midY + dy) + '"' +
-            " font-family='" + fontStack.replace(/'/g, "&apos;") + "'" +
-            ' font-weight="' + weight + '"' +
-            ' font-size="' + fmt(fontSize) + '"' +
-            ' text-anchor="start" dominant-baseline="middle"' +
-            ' fill="' + fill + '"' +
-            (stroke ? (' stroke="' + stroke + '" stroke-width="' + fmt(strokeWidth) +
-                       '" stroke-linejoin="round" stroke-linecap="round" paint-order="stroke fill"') : '') +
-            (alphaAttr || '') +
-            '>' + esc(ch) + '</text>'
-          );
+          const cx = x + widths[i] / 2;
+          if (otFont){
+            const gp = window.MotionFontTrace.glyphPath(otFont, ch, fontSize);
+            if (gp){
+              letterParts.push(
+                '<path d="' + gp.d + '" transform="translate(' +
+                fmt(cx) + ' ' + fmt(midY) + ')"/>'
+              );
+            }
+          } else {
+            letterParts.push(
+              '<text x="' + fmt(x) + '" y="' + fmt(midY) + '"' +
+              " font-family='" + fontStack.replace(/'/g, "&apos;") + "'" +
+              ' font-weight="' + weight + '"' +
+              ' font-size="' + fmt(fontSize) + '"' +
+              ' text-anchor="start" dominant-baseline="middle">' + esc(ch) + '</text>'
+            );
+          }
           x += widths[i] + ls;
         }
-        return parts.join('');
       }
 
       const out = [];
@@ -7060,42 +7109,61 @@
                              ') scale(' + fmt(sc) + ') translate(' + fmt(-H.SIZE/2) + ' ' + fmt(-H.SIZE/2) + ')">');
       out.push('<g transform="translate(' + fmt(offX) + ' ' + fmt(offY) + ') scale(' + fmt(s) + ')">');
 
-      // Outer rings down to k=1: stroked text, band thickness = outerR-innerR,
-      // centered on (outerR+innerR)/2. Color = ringColor. The canvas version
-      // composites outer-fill minus inner-fill on a mask; the equivalent
-      // single-stroke approximation gives a clean concentric outline per ring.
-      for (let k = rings - 1; k >= 1; k--){
+      // The ring is drawn by dilating the letter shape outward via
+      // feMorphology, then subtracting an inner dilated copy via feComposite
+      // operator=out, then flooding with ringColor. This mirrors the canvas's
+      // `strokeText(outerR*2) - strokeText(innerR*2)` recipe exactly, and
+      // works in any SVG renderer that supports SVG 1.1 filters
+      // (Chrome/Firefox/Safari/Illustrator/Inkscape — basically everywhere).
+      out.push('<defs>');
+      // No explicit fill on the group so `<use fill="...">` can override per
+      // ring (feMorphology only cares about alpha; default fill is black,
+      // which is fine as the SourceGraphic).
+      out.push('<g id="' + lettersId + '">' + letterParts.join('') + '</g>');
+
+      const filterIds = [];
+      for (let k = rings - 1; k >= 0; k--){
         const outerR = (k + 0.5) * spacing + pulse * spacing * 0.4;
         const innerR = Math.max(0, (k + 0.5) * spacing - ringW + pulse * spacing * 0.4);
-        const off = k / rings;
         const band = Math.max(0, outerR - innerR);
-        const midR = (outerR + innerR) / 2;
-        // Stroked text at mid-radius is the SVG analogue of (fill outerR)
-        // minus (fill innerR). Use stroke-width=band, then offset by midR*2
-        // by emitting strokeText with width=midR*2... actually the canvas
-        // recipe uses `strokeText` with lineWidth=outerR*2 as a flood, so we
-        // mirror: stroke-width = band, placed once.
-        if (band <= 0) continue;
-        out.push(emitWord(p.ringColor, band, 'none', pxo * off, pyo * off));
-        // The above gives only the outer outline at midR. To cover the full
-        // band (analogous to the difference of two thick strokes), draw a
-        // second pass with stroke-width = midR*2 - band... but that's no
-        // longer concentric. Better: stroke at the mean radius with band
-        // width — single pass is the clean approximation noted in the spec.
+        if (band <= 0){ filterIds.push(null); continue; }
+        const oR = Math.max(0, outerR);
+        const iR = Math.max(0, innerR);
+        const color = (k === 0) ? p.ink : p.ringColor;
+        const fid = lettersId + '-f' + k;
+        filterIds.push({ id: fid, color, oR, iR, k });
+        out.push(
+          '<filter id="' + fid + '" x="-50%" y="-50%" width="200%" height="200%">' +
+            '<feMorphology in="SourceGraphic" operator="dilate" radius="' + fmt(oR) + '" result="o"/>' +
+            '<feMorphology in="SourceGraphic" operator="dilate" radius="' + fmt(iR) + '" result="i"/>' +
+            '<feComposite in="o" in2="i" operator="out" result="band"/>' +
+            '<feFlood flood-color="' + color + '"/>' +
+            '<feComposite in2="band" operator="in"/>' +
+          '</filter>'
+        );
+      }
+      out.push('</defs>');
+
+      // Emit one <use> per ring, in the same outer→inner order the canvas
+      // paints (rings-1 down to 0). Parallax offset = (pxo, pyo) * (k/rings).
+      // Filter regions need a non-translated source, so we put the translate
+      // on a wrapper <g> outside the filtered <use>.
+      for (let idx = 0; idx < filterIds.length; idx++){
+        const f = filterIds[idx];
+        if (!f) continue;
+        const off = f.k / rings;
+        const dx = pxo * off, dy = pyo * off;
+        out.push(
+          '<g transform="translate(' + fmt(dx) + ' ' + fmt(dy) + ')">' +
+            '<use href="#' + lettersId + '" filter="url(#' + f.id + ')"/>' +
+          '</g>'
+        );
       }
 
-      // k = 0: central ring + solid letterform on top.
-      {
-        const outerR = 0.5 * spacing + pulse * spacing * 0.4;
-        const innerR = Math.max(0, 0.5 * spacing - ringW + pulse * spacing * 0.4);
-        const band = Math.max(0, outerR - innerR);
-        if (band > 0){
-          out.push(emitWord(p.ink, band, 'none', 0, 0));
-        }
-        // Solid central letterform painted on top.
-        const fontColor = (p.fontColor != null) ? p.fontColor : p.ink;
-        out.push(emitWord(null, 0, fontColor, 0, 0));
-      }
+      // Solid central letterform on top — no filter, no parallax, painted in
+      // p.fontColor (or p.ink if fontColor isn't set).
+      const fontColor = (p.fontColor != null) ? p.fontColor : p.ink;
+      out.push('<use href="#' + lettersId + '" fill="' + fontColor + '"/>');
 
       out.push('</g>');
       if (sc !== 1) out.push('</g>');
