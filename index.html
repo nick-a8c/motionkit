@@ -7132,8 +7132,18 @@
         const color = (k === 0) ? p.ink : p.ringColor;
         const fid = lettersId + '-f' + k;
         filterIds.push({ id: fid, color, oR, iR, k });
+        // Filter region must be in userSpaceOnUse coords sized to cover the
+        // maximum dilation: feMorphology with radius=R can expand the source
+        // up to R user units in every direction. With objectBoundingBox units
+        // a 200% region clips for any R larger than half the bbox, which is
+        // every ring after the first few — that's why the user saw all rings
+        // collapse to the unchanged letter shape.
+        const pad = Math.max(64, oR + 32);
         out.push(
-          '<filter id="' + fid + '" x="-50%" y="-50%" width="200%" height="200%">' +
+          '<filter id="' + fid + '"' +
+          ' filterUnits="userSpaceOnUse" primitiveUnits="userSpaceOnUse"' +
+          ' x="' + fmt(-pad) + '" y="' + fmt(-pad) + '"' +
+          ' width="' + fmt(W + 2*pad) + '" height="' + fmt(Ht + 2*pad) + '">' +
             '<feMorphology in="SourceGraphic" operator="dilate" radius="' + fmt(oR) + '" result="o"/>' +
             '<feMorphology in="SourceGraphic" operator="dilate" radius="' + fmt(iR) + '" result="i"/>' +
             '<feComposite in="o" in2="i" operator="out" result="band"/>' +
