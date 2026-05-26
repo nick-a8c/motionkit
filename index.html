@@ -6579,21 +6579,22 @@
           const hex = cellBg.replace('#','');
           const br = (parseInt(hex.slice(0,2),16) + parseInt(hex.slice(2,4),16) + parseInt(hex.slice(4,6),16))/3;
           const ink = (br > 160) ? p.ink : p.inkDark;
-          // Non-uniform scaled glyph: mirror the canvas math (ctx.scale(sx, sy)
-          // around the cell's anchor point).
+          // Force the glyph to span the cell horizontally (textLength +
+          // lengthAdjust="spacingAndGlyphs" is far more reliable across SVG
+          // renderers than non-uniform scale() + dominant-baseline). Use
+          // dy="0.35em" to put the visual middle of cap glyphs at y=0.
           const pad = 0.02 * Math.min(w2, h);
-          const mw = meas.measureText(ch).width || fs*0.5;
-          const sx2 = (w2 - pad*2) / mw;
-          const sy2 = (h - pad*2) / (fs * 0.78);
+          const vfs = (h - pad*2) / 0.78;                  // effective vertical font size
+          const tlen = Math.max(1, w2 - pad*2);            // forced glyph extent
           const cxp = x + w2*0.5, cyp = y + h*0.55;
           out.push(
-            '<text x="0" y="0" fill="' + ink + '"' +
+            '<text x="' + fmt(cxp) + '" y="' + fmt(cyp) + '"' +
+            ' fill="' + ink + '"' +
             " font-family='" + fontFamily.replace(/'/g, "&apos;") + "'" +
             ' font-weight="' + fontWeight + '"' +
-            ' font-size="' + fs + '"' +
-            ' text-anchor="middle" dominant-baseline="middle"' +
-            ' transform="translate(' + fmt(cxp) + ' ' + fmt(cyp) +
-            ') scale(' + fmt(sx2) + ' ' + fmt(sy2) + ')">' +
+            ' font-size="' + fmt(vfs) + '"' +
+            ' textLength="' + fmt(tlen) + '" lengthAdjust="spacingAndGlyphs"' +
+            ' text-anchor="middle" dy="0.35em">' +
             esc(ch) + '</text>'
           );
           x += w2;
@@ -6706,7 +6707,11 @@
       const weights = ['400','700','900'];
       const weight = weights[p.fontWeight|0] || '900';
 
-      function drawTextSilhouette(c, lineWidth, offsetX, offsetY){
+      // `color` is optional — for mask compositing the silhouette's actual
+      // color doesn't matter (source-in re-fills via fillRect afterward), so
+      // callers there can omit it. For the solid letter painted on top of
+      // the central ring we pass `p.fontColor` so the user knob takes effect.
+      function drawTextSilhouette(c, lineWidth, offsetX, offsetY, color){
         c.save();
         c.translate(offsetX || 0, offsetY || 0);
         const fontSize = (p.fontSize != null ? p.fontSize : 400) *
@@ -6726,7 +6731,8 @@
         const midY = H / 2;
         let x = startX;
         c.lineJoin = 'round'; c.lineCap = 'round';
-        c.fillStyle = '#000'; c.strokeStyle = '#000';
+        const col = color || '#000';
+        c.fillStyle = col; c.strokeStyle = col;
         c.lineWidth = lineWidth;
         for (let i=0; i<word.length; i++){
           if (lineWidth > 0) c.strokeText(word.charAt(i), x, midY);
@@ -6763,8 +6769,7 @@
           ctx.drawImage(state.mask, 0, 0, W, H);
           // Solid letterform painted on top of the central ring — this is
           // the "font color" the user controls separately from the rings.
-          ctx.fillStyle = (p.fontColor != null ? p.fontColor : p.ink);
-          drawTextSilhouette(ctx, 0, 0, 0);
+          drawTextSilhouette(ctx, 0, 0, 0, (p.fontColor != null ? p.fontColor : p.ink));
           continue;
         }
         mctx.clearRect(0, 0, W, H);
